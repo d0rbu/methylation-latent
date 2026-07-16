@@ -1,0 +1,24 @@
+[project]
+name = "methylation-latent-caduceus-runtime"
+version = "0.1.0"
+description = "Pinned native runtime for the reviewed Caduceus checkpoint."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "beartype>=0.22,<1",
+    "causal-conv1d==1.2.0.post2",
+    "huggingface-hub==0.24.7",
+    "jaxtyping>=0.3,<1",
+    "mamba-ssm==1.2.0.post1",
+    "phantom-types>=3,<4",
+    "safetensors>=0.4,<1",
+    "setuptools==69.1.0",
+    "torch==2.2.0",
+    "transformers==4.38.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.extra-build-dependencies]
+causal-conv1d = ["torch==2.2.0"]
+mamba-ssm = ["torch==2.2.0"]

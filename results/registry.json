@@ -1,0 +1,12 @@
+{
+  "schema": "methylation-latent.site-data.v1",
+  "protocol_id": "gse40279-hg19-caduceus-ps-v1",
+  "eligibility": "audit_only",
+  "status": "blocked: authentic GSE40279 red/green IDAT pairs are unavailable from GEO, and optimization plus the seSAMe R lock remain draft; no scientific run has been executed",
+  "artifact_ids": [],
+  "provenance": null,
+  "window_sweep": [],
+  "distance_metrics": [],
+  "age_metrics": [],
+  "projection": []
+}
