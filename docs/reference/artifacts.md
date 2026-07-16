@@ -1,58 +1,72 @@
 # Artifact schemas
 
-Every artifact is an immutable payload plus canonical JSON metadata. Files are SHA-256 hashed after
-write; downstream metadata names the upstream hashes it consumed.
+Artifacts are immutable payloads with canonical JSON metadata and SHA-256 identities. Multi-file
+directories use a manifest or atomic final-directory rename.
 
-## Common metadata
+## Primary data
 
-All records contain:
-
-- schema name and integer version;
-- artifact ID and creation time;
-- protocol ID and Git commit;
-- command and locked-environment fingerprint;
-- payload path, byte size, and SHA-256;
-- upstream artifact IDs and hashes;
-- eligibility: `audit_only`, `primary_candidate`, or `primary_validated`;
-- validation checks with explicit measured values and tolerances.
-
-## Data artifacts
-
-| Schema | Payload | Required facts |
-|---|---|---|
-| `sample_metadata.v1` | JSON | ordered GSM/Sentrix IDs, age, gender, ethnicity, source, plate |
-| `probe_manifest.v1` | JSON/TSV | ordered autosomal cg IDs, hg19 cytosine coordinates, context, design, manifest hash |
-| `exclusion_ledger.v1` | TSV | probe, reason, source, source version/hash; overlapping reasons retained |
-| `beta_matrix.v1` | safetensors | `[probe, sample]`, float64, complete, bounded, raw-IDAT provenance |
-| `target_geometry.v1` | safetensors | ordered `X` and `rho`, sample/probe hashes, centering/norm/correlation audits |
-| `sequence_audit.v1` | JSON | reference/build hashes, all windows, centred-CG and alphabet counts |
-| `split.v1` | JSON | target-blind inputs, anchors/test/train IDs, buffers, overlap checks |
-| `embedding.v1` | safetensors | `[probe, 256]` fp16, window/model revision, probe-order hash |
-
-## Run artifacts
-
-| Schema | Purpose |
+| Schema | Required payload/contract |
 |---|---|
-| `distance_baseline.v1` | training-only bin means/counts and trans mean |
-| `sequence_age_baseline.v1` | fitted coefficients and held-out metrics for GC/CpG density |
-| `caduceus_age_baseline.v1` | age-only checkpoint/config and held-out metrics |
-| `latent_metric_run.v1` | full checkpoint/config, prerequisite baseline IDs, validation history |
-| `evaluation_pairs.v1` | immutable seen/test and test/test pair indices plus distance classes |
-| `evaluation.v1` | separate per-population/bin pair metrics and held-out age metrics |
-| `latent_projection.v1` | training-fitted axes and projected held-out points/context |
-| `results_registry.v1` | ordered references to validated baseline/full evaluation records |
-| `site-data.v1` | complete selected-window panels plus split/data fingerprints and retained counts |
+| `gse87571-static-universe.v1` | pinned manifest/masks/reference and exhaustive window counts |
+| `gse87571-prepared-cohort.v1` | float64 beta matrix, ordered subjects/probes, QC audit |
+| `target-geometry-audit.v1` | `X`, age, `rho`, order hashes, correlation error, rank ceilings |
+| `sequence-features.v1` | two float64 features for every probe and window |
+| `nested-genomic-split.v1` | primary plus nested validation indices and overlap audits |
+| `primary-data-summary.v1` | compact observed counts and payload hashes |
+| `primary-data-bundle.v2` | producer Git commit plus exhaustive path, size, and hash for all 17 files |
 
-## Eligibility rules
+The bundle defines a closed world: missing, extra, modified, or reordered files are errors.
 
-- `processed_geo_audit` provenance can never exceed `audit_only`.
-- `beta_matrix.v1` is `primary_candidate` only with verified IDAT/control provenance and completed
-  detection/normalization/exclusion records.
-- A target is no more eligible than its beta matrix.
-- A split becomes candidate only after all window overlap checks pass.
-- A full run must match both baseline upstream fingerprints exactly.
-- An evaluation is `primary_validated` only if data, target, split, embedding, checkpoint, pair
-  indices, and distance baseline are all candidate/validated and all checks pass.
-- The site displays primary curves only from `primary_validated` evaluations.
+## Embeddings
 
-Unknown fields and schema versions are errors. Artifacts are not upgraded implicitly.
+| Schema | Contract |
+|---|---|
+| `caduceus-embedding-shard.v2` | producer Git commit, immutable probe slice, `[count,256]` fp16 tensor, window/order/hash |
+| `caduceus-embedding-cache.v2` | one producer commit, exact gap-free shard coverage, finalized aggregate identity |
+
+A finalized cache cannot accept another shard.
+
+## Experiment artifacts
+
+| Schema | Contract |
+|---|---|
+| `sequence-age-baseline.v2` | producer commit, complete-train coefficients, held-out age metrics |
+| `evaluation-pair-cache.v2` | producer commit, five deterministic pair sets, exact targets, distance reference |
+| `latent-tuning-run.v2` | producer commit, one configuration, validation history, selected step, checkpoint hash |
+| `hyperparameter-selection.v2` | producer commit, candidate hashes, frozen tie-break, selected configuration/step |
+| `final-refit.v2` | producer commit and selected-step refit on complete primary training |
+| `held-out-evaluation.v2` | producer commit, separate age/pair metrics, optional 16-kb projection |
+| `site-data.v1` | complete split-specific panels and all contributing artifact IDs |
+
+## Identity rules
+
+Downstream metadata names:
+
+- exact producer Git commit from a clean worktree;
+- protocol ID and protocol-file SHA-256;
+- sealed data-bundle SHA-256;
+- target, probe-order, split, embedding, prerequisite, selection, model, and pair-cache hashes;
+- split name and window size;
+- exact training configuration and seed.
+
+Existing outputs are accepted only after full revalidation. A same-sized but different payload is
+not compatible. Unknown schemas/fields and missing prerequisites fail; there is no implicit
+upgrade.
+
+Every artifact-producing entry point resolves the repository top level, records `HEAD`, and
+requires `git status --porcelain=v1 --untracked-files=all` to be empty before doing work. A dirty
+worktree is an error because an uncommitted producer cannot be reconstructed from its claimed
+commit.
+
+## Publication eligibility
+
+The site compiler labels a split `primary_validated` only after all four window evaluation files
+match the sealed data and split identity and contain:
+
+- both pair populations;
+- uniform and distance-stratified model/reference metrics;
+- all three age stages;
+- the complete held-out projection at the registered window;
+- final model, pair cache, and baseline hashes.
+
+The compiler does not infer eligibility from filenames or process exit status.

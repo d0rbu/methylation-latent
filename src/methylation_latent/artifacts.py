@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+import subprocess
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -26,6 +27,51 @@ JsonScalar: TypeAlias = None | bool | int | float | str  # noqa: UP040
 JsonValue: TypeAlias = (  # noqa: UP040
     JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 )
+
+
+@beartype
+def require_clean_git_commit(repository_root: Path) -> str:
+    """Return HEAD only when it exactly describes a clean repository worktree."""
+
+    root = repository_root.resolve()
+    observed_root = subprocess.run(
+        ("git", "-C", str(root), "rev-parse", "--show-toplevel"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if Path(observed_root).resolve() != root:
+        raise ValueError(
+            f"requested repository root differs from Git toplevel: "
+            f"requested={root}, observed={observed_root}"
+        )
+    commit = subprocess.run(
+        ("git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if _GIT_COMMIT.fullmatch(commit) is None:
+        raise ValueError("Git HEAD must resolve to exactly 40 lowercase hex characters")
+    status = subprocess.run(
+        (
+            "git",
+            "-C",
+            str(root),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if status:
+        changed_paths = tuple(line[3:] for line in status.splitlines())
+        raise RuntimeError(
+            f"artifact production requires a clean Git worktree; changed_paths={changed_paths[:20]}"
+        )
+    return commit
 
 
 class Eligibility(StrEnum):

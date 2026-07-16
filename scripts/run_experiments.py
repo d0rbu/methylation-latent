@@ -14,6 +14,7 @@ import torch as t
 
 from methylation_latent.artifacts import (
     JsonValue,
+    require_clean_git_commit,
     sha256_file,
     sha256_ordered_strings,
     write_canonical_json_exclusive,
@@ -75,11 +76,11 @@ from methylation_latent.training import (
     train_latent_metric,
 )
 
-_SEQUENCE_SCHEMA = "methylation-latent.sequence-age-baseline.v1"
-_TUNING_SCHEMA = "methylation-latent.latent-tuning-run.v1"
-_SELECTION_SCHEMA = "methylation-latent.hyperparameter-selection.v1"
-_FINAL_SCHEMA = "methylation-latent.final-refit.v1"
-_EVALUATION_SCHEMA = "methylation-latent.held-out-evaluation.v1"
+_SEQUENCE_SCHEMA = "methylation-latent.sequence-age-baseline.v2"
+_TUNING_SCHEMA = "methylation-latent.latent-tuning-run.v2"
+_SELECTION_SCHEMA = "methylation-latent.hyperparameter-selection.v2"
+_FINAL_SCHEMA = "methylation-latent.final-refit.v2"
+_EVALUATION_SCHEMA = "methylation-latent.held-out-evaluation.v2"
 _MODEL_KEYS = {"age_direction", "projection.weight"}
 _SPLIT_FILES = (
     ("diverse-blocks", "diverse_blocks"),
@@ -89,6 +90,7 @@ _SPLIT_FILES = (
 
 @dataclass(frozen=True, slots=True)
 class ExperimentContext:
+    git_commit: str
     config: ProtocolConfig
     protocol_sha256: str
     data_directory: Path
@@ -120,6 +122,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _load_context(arguments: argparse.Namespace) -> ExperimentContext:
+    git_commit = require_clean_git_commit(Path(__file__).resolve().parents[1])
     config = load_protocol_config(arguments.config)
     if config.status != "frozen":
         raise ValueError("experiment execution requires a frozen protocol")
@@ -160,6 +163,7 @@ def _load_context(arguments: argparse.Namespace) -> ExperimentContext:
     if targets.methylation.n_samples != bundle.retained_samples:
         raise ValueError("sealed bundle and loaded sample counts differ")
     return ExperimentContext(
+        git_commit=git_commit,
         config=config,
         protocol_sha256=protocol_sha256,
         data_directory=arguments.data,
@@ -215,6 +219,7 @@ def _identity(
     embedding_sha256: str | None,
 ) -> dict[str, JsonValue]:
     return {
+        "git_commit": context.git_commit,
         "protocol_id": context.config.protocol_id,
         "protocol_sha256": context.protocol_sha256,
         "data_sha256": context.data_sha256,
@@ -343,6 +348,7 @@ def _pair_cache_identity(
     return EvaluationPairCacheIdentity(
         protocol_id=context.config.protocol_id,
         protocol_sha256=context.protocol_sha256,
+        git_commit=context.git_commit,
         data_sha256=context.data_sha256,
         target_sha256=context.target_sha256,
         split_name=split_name,

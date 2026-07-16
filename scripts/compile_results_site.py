@@ -11,6 +11,7 @@ from typing import cast
 from methylation_latent.artifacts import (
     Eligibility,
     JsonValue,
+    require_clean_git_commit,
     sha256_file,
     sha256_ordered_strings,
     write_canonical_json_exclusive,
@@ -31,7 +32,7 @@ from methylation_latent.site import (
     build_static_site,
 )
 
-_EVALUATION_SCHEMA = "methylation-latent.held-out-evaluation.v1"
+_EVALUATION_SCHEMA = "methylation-latent.held-out-evaluation.v2"
 _SITE_SCHEMA = "methylation-latent.site-data.v1"
 _SPLITS = (
     ("diverse-blocks", "diverse_blocks"),
@@ -227,8 +228,11 @@ def _artifact_ids(
     experiments: Path,
     split_name: str,
     records: tuple[tuple[Path, dict[str, object]], ...],
+    *,
+    git_commit: str,
 ) -> tuple[str, ...]:
     identifiers = [
+        f"site-compiler-git:{git_commit}",
         f"primary-data-bundle:{sha256_file(data / 'bundle.json')}",
         (
             "evaluation-pair-cache:"
@@ -251,6 +255,7 @@ def _artifact_ids(
 
 def main() -> None:
     arguments = _parser().parse_args()
+    git_commit = require_clean_git_commit(Path(__file__).resolve().parents[1])
     config = load_protocol_config(arguments.config)
     protocol_sha256 = sha256_file(arguments.config)
     bundle = verify_primary_data_bundle(
@@ -318,6 +323,7 @@ def main() -> None:
                 arguments.experiments,
                 split_name,
                 records,
+                git_commit=git_commit,
             ),
             provenance=SiteProvenance(
                 split_family=split_family,

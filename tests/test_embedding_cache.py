@@ -20,6 +20,8 @@ from methylation_latent.embedding_cache import (
 )
 from methylation_latent.storage import EmbeddingMatrix
 
+GIT_COMMIT = "f" * 40
+
 
 def test_embedding_cache_is_restart_safe_ordered_and_immutable(
     tmp_path: Path,
@@ -34,6 +36,7 @@ def test_embedding_cache_is_restart_safe_ordered_and_immutable(
             tmp_path,
             EmbeddingMatrix(expected[start:stop]),
             probes,
+            git_commit=GIT_COMMIT,
             window_size=window,
             start=start,
             stop=stop,
@@ -52,6 +55,7 @@ def test_embedding_cache_is_restart_safe_ordered_and_immutable(
                 tmp_path,
                 EmbeddingMatrix(expected[start:stop]),
                 probes,
+                git_commit=GIT_COMMIT,
                 window_size=window,
                 start=start,
                 stop=stop,
@@ -59,13 +63,26 @@ def test_embedding_cache_is_restart_safe_ordered_and_immutable(
     finalize_embedding_cache_exclusive(
         tmp_path,
         probes,
+        git_commit=GIT_COMMIT,
         window_size=window,
         shard_size=2,
     )
     assert t.equal(
-        load_embedding_cache(tmp_path, probes, window_size=window).tensor,
+        load_embedding_cache(
+            tmp_path,
+            probes,
+            window_size=window,
+            expected_git_commit=GIT_COMMIT,
+        ).tensor,
         expected,
     )
+    with pytest.raises(ValueError, match="manifest Git commit differs"):
+        load_embedding_cache(
+            tmp_path,
+            probes,
+            window_size=window,
+            expected_git_commit="e" * 40,
+        )
 
 
 def test_embedding_cache_rejects_probe_order_drift(
@@ -78,6 +95,7 @@ def test_embedding_cache_rejects_probe_order_drift(
         tmp_path,
         EmbeddingMatrix(t.ones((2, 256), dtype=t.float16)),
         probes,
+        git_commit=GIT_COMMIT,
         window_size=window,
         start=0,
         stop=2,
@@ -90,6 +108,15 @@ def test_embedding_cache_rejects_probe_order_drift(
             window_size=window,
             start=0,
             stop=2,
+        )
+    with pytest.raises(ValueError, match="shard Git commit differs"):
+        load_embedding_shard(
+            tmp_path / identity.directory_name,
+            probes,
+            window_size=window,
+            start=0,
+            stop=2,
+            expected_git_commit="e" * 40,
         )
 
 
@@ -105,6 +132,7 @@ def test_embedding_cache_rejects_corrupt_shards_and_manifests(
         cache,
         embeddings,
         probes,
+        git_commit=GIT_COMMIT,
         window_size=window,
         start=0,
         stop=2,
@@ -112,22 +140,34 @@ def test_embedding_cache_rejects_corrupt_shards_and_manifests(
     finalize_embedding_cache_exclusive(
         cache,
         probes,
+        git_commit=GIT_COMMIT,
         window_size=window,
         shard_size=2,
     )
     with pytest.raises(ValueError, match="must be positive"):
         embedding_shard_ranges(0, 2)
     with pytest.raises(ValueError, match="positive and even"):
-        EmbeddingShardIdentity(3, 0, 1, "a" * 64, "b" * 64)
+        EmbeddingShardIdentity(GIT_COMMIT, 3, 0, 1, "a" * 64, "b" * 64)
     with pytest.raises(ValueError, match="non-empty and increasing"):
-        EmbeddingShardIdentity(2, 1, 1, "a" * 64, "b" * 64)
+        EmbeddingShardIdentity(GIT_COMMIT, 2, 1, 1, "a" * 64, "b" * 64)
     with pytest.raises(ValueError, match="fingerprints"):
-        EmbeddingShardIdentity(2, 0, 1, "short", "b" * 64)
+        EmbeddingShardIdentity(GIT_COMMIT, 2, 0, 1, "short", "b" * 64)
+    with pytest.raises(ValueError, match="Git commit"):
+        EmbeddingShardIdentity("bad", 2, 0, 1, "a" * 64, "b" * 64)
+    with pytest.raises(ValueError, match="cache Git commit"):
+        finalize_embedding_cache_exclusive(
+            cache,
+            probes,
+            git_commit="bad",
+            window_size=window,
+            shard_size=2,
+        )
     with pytest.raises(ValueError, match="row count differs"):
         save_embedding_shard_exclusive(
             tmp_path / "wrong-rows",
             embeddings,
             probes,
+            git_commit=GIT_COMMIT,
             window_size=window,
             start=0,
             stop=1,
@@ -137,6 +177,7 @@ def test_embedding_cache_rejects_corrupt_shards_and_manifests(
             tmp_path / "out-of-range",
             EmbeddingMatrix(t.ones((3, 256), dtype=t.float16)),
             probes,
+            git_commit=GIT_COMMIT,
             window_size=window,
             start=0,
             stop=3,
@@ -220,6 +261,7 @@ def test_embedding_cache_rejects_corrupt_shards_and_manifests(
         finalize_embedding_cache_exclusive(
             unknown_entry,
             probes,
+            git_commit=GIT_COMMIT,
             window_size=window,
             shard_size=2,
         )
@@ -234,6 +276,12 @@ def test_embedding_cache_rejects_corrupt_shards_and_manifests(
     (malformed_manifest / "manifest.json").write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="manifest envelope"):
         load_embedding_cache(malformed_manifest, probes, window_size=window)
+
+    invalid_git, raw = manifest_copy("invalid-git")
+    raw["git_commit"] = "bad"
+    (invalid_git / "manifest.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="manifest Git commit is invalid"):
+        load_embedding_cache(invalid_git, probes, window_size=window)
 
     wrong_identity, raw = manifest_copy("wrong-identity")
     raw["window_size"] = 2048
@@ -264,3 +312,13 @@ def test_embedding_cache_rejects_corrupt_shards_and_manifests(
     (wrong_record / "manifest.json").write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="record differs"):
         load_embedding_cache(wrong_record, probes, window_size=window)
+
+    wrong_shard_git, raw = manifest_copy("wrong-shard-git")
+    shard = wrong_shard_git / identity.directory_name / "metadata.json"
+    shard_raw = json.loads(shard.read_text(encoding="utf-8"))
+    shard_raw["git_commit"] = "e" * 40
+    shard.write_text(json.dumps(shard_raw), encoding="utf-8")
+    raw["shards"][0]["git_commit"] = "e" * 40
+    (wrong_shard_git / "manifest.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="shard Git commit differs from its manifest"):
+        load_embedding_cache(wrong_shard_git, probes, window_size=window)

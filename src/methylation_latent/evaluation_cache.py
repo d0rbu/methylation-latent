@@ -37,10 +37,11 @@ from methylation_latent.storage import (
 )
 from methylation_latent.targets import UnitNormRows
 
-_SCHEMA = "methylation-latent.evaluation-pair-cache.v1"
+_SCHEMA = "methylation-latent.evaluation-pair-cache.v2"
 _PAYLOAD = "pairs.safetensors"
 _METADATA = "metadata.json"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", flags=re.ASCII)
+_GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$", flags=re.ASCII)
 
 
 class PairSetName(StrEnum):
@@ -68,6 +69,7 @@ class EvaluationPairCacheIdentity:
 
     protocol_id: str
     protocol_sha256: str
+    git_commit: str
     data_sha256: str
     target_sha256: str
     split_name: str
@@ -77,6 +79,8 @@ class EvaluationPairCacheIdentity:
     def __post_init__(self) -> None:
         if not self.protocol_id or not self.split_name:
             raise ValueError("evaluation-cache protocol and split names must be non-empty")
+        if _GIT_COMMIT.fullmatch(self.git_commit) is None:
+            raise ValueError("evaluation-cache Git commit must be 40 lowercase hex characters")
         hashes = (
             self.protocol_sha256,
             self.data_sha256,

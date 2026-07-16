@@ -1,50 +1,61 @@
 # Workflows
 
-## Add a Domain Type
+## Change a scientific choice
 
-1. Add the phantom type near the code that owns the domain concept.
-2. Add a `parse_*` refinement function for untrusted inputs.
-3. Use the refined type in public functions and dataclasses.
-4. Add `st.from_type(...)` property tests when the type has a Hypothesis strategy.
-5. Update `docs/development/correctness.md` if the pattern is new.
+1. Create a new strict protocol schema/ID.
+2. Pin every new source byte, model revision, seed, grid, and selection rule.
+3. Generate new artifacts under a new root; never overwrite v2 artifacts.
+4. Re-run the complete validation ladder before comparing results.
 
-## Add an Experiment Helper
-
-1. Put reusable code in the project module or package once one exists.
-2. Keep script-only orchestration out of core logic.
-3. Validate raw inputs at the boundary.
-4. Return typed values, dataclasses, or explicit result objects.
-5. Cover invariants with unit tests and property tests.
+Changing a threshold, split, window, feature extraction rule, pair sampler, checkpoint rule, or
+test metric after seeing test results is not a v2 continuation.
 
 ## Add or replace an external source
 
-1. Add the immutable URL/revision and cryptographic hash to the protocol configuration.
-2. Parse the source with an exact schema and count contract.
-3. Preserve the original source name and overlapping exclusion reasons in the ledger.
-4. Add malformed-schema, duplicate-ID, hash, and count tests.
-5. Changing reviewed source bytes requires a new protocol ID.
+1. Record immutable URL/revision and cryptographic hash.
+2. Parse an exact schema and reject duplicates or unexpected rows.
+3. Preserve original source and every overlapping exclusion reason.
+4. Add malformed-schema, count, order, and hash tests.
+5. Create a new protocol identity.
 
-## Run an experiment stage
+## Resume an embedding stage
 
-1. Verify the protocol is frozen; committed v1 remains `draft` while IDATs and the reviewed
-   optimization/checkpoint schedule are absent.
-2. Verify every upstream payload against its adjacent metadata.
-3. Confirm data/split/window/probe-order fingerprints match exactly.
-4. Run stages in the order in `docs/pipelines/experiment-lifecycle.md`.
-5. Publish the new payload and canonical metadata exclusively; never overwrite an artifact.
-6. Register full-model results only after both matching baselines exist.
+1. Confirm the process is no longer running and the GPU has sufficient free memory.
+2. Re-run the identical command.
+3. The loader validates every completed shard against probe order, window, and range.
+4. Missing shards are generated; a finalized cache is never modified.
+
+Do not delete a shard merely because a run stopped. Invalid shards fail validation and require an
+explicit forensic decision.
+
+## Resume training
+
+Re-run the identical `age`, `full`, or `evaluate` stage. Completed immutable runs are reloaded and
+validated. Missing candidates continue in deterministic grid order. A partial temporary directory
+is not a completed run and must never be renamed by hand.
 
 ## Change split logic
 
-1. Keep the API limited to locus metadata and Torch RNG state.
+1. Keep the API limited to locus metadata and seeded Torch RNG state.
 2. Add a brute-force interval oracle for the changed behavior.
-3. Test the maximum buffer and each individual primary window.
-4. Regenerate split artifacts under a new identity; old results remain attached to the old split.
+3. Test primary and nested-validation buffers at the maximum window.
+4. Test exact non-overlap at every configured window.
+5. Regenerate split, pair, model, and evaluation artifacts under a new identity.
 
-## Before Handoff
+## Publish results
+
+1. Require the sealed data bundle, both baseline families, final models, pair caches, and all
+   evaluation records.
+2. Compile the static site from artifacts, never log text.
+3. Verify protocol IDs, split labels, hashes, panel completeness, and local HTTP content.
+4. Start the Cloudflare tunnel only after the local origin is stable.
+5. Re-fetch the public URL and verify the expected protocol marker.
+
+## Before handoff
 
 ```bash
 uv run pre-commit run --all-files
+git status --short
 ```
 
-If a check is intentionally skipped, document the reason in the handoff.
+Report any long-running process with its PID, output directory, and verified restart contract.

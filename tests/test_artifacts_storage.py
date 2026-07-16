@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -26,6 +27,7 @@ from methylation_latent.artifacts import (
     finalize_metadata,
     least_eligible,
     load_metadata,
+    require_clean_git_commit,
     sha256_file,
     sha256_ordered_strings,
     verify_payload,
@@ -58,6 +60,41 @@ def test_hashing_is_framed_and_file_hash_matches_bytes(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="positive"):
         sha256_file(payload, chunk_size=0)
+
+
+def test_artifact_producer_requires_exact_clean_git_commit(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    for command in (
+        ("git", "init", "--quiet"),
+        ("git", "config", "user.email", "test@example.invalid"),
+        ("git", "config", "user.name", "Test User"),
+    ):
+        subprocess.run(command, cwd=repository, check=True, capture_output=True)
+    tracked = repository / "tracked.txt"
+    tracked.write_text("committed\n", encoding="utf-8")
+    subprocess.run(("git", "add", "tracked.txt"), cwd=repository, check=True)
+    subprocess.run(
+        ("git", "commit", "--quiet", "-m", "initial"),
+        cwd=repository,
+        check=True,
+    )
+    commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert require_clean_git_commit(repository) == commit
+
+    nested = repository / "nested"
+    nested.mkdir()
+    with pytest.raises(ValueError, match="differs from Git toplevel"):
+        require_clean_git_commit(nested)
+    (nested / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="clean Git worktree"):
+        require_clean_git_commit(repository)
 
 
 def test_reference_archive_hash_and_decompressed_identity(tmp_path: Path) -> None:

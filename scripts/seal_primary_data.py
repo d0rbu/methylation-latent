@@ -9,7 +9,11 @@ from typing import cast
 
 import torch as t
 
-from methylation_latent.artifacts import sha256_file, sha256_ordered_strings
+from methylation_latent.artifacts import (
+    require_clean_git_commit,
+    sha256_file,
+    sha256_ordered_strings,
+)
 from methylation_latent.cohort import (
     load_prepared_cohort,
     load_probe_table,
@@ -296,6 +300,7 @@ def _assert_split_semantics(
 
 def main() -> None:
     arguments = _parser().parse_args()
+    git_commit = require_clean_git_commit(Path(__file__).resolve().parents[1])
     config = load_protocol_config(arguments.config)
     protocol_sha256 = sha256_file(arguments.config)
     probes = load_probe_table(arguments.data / "probes.tsv")
@@ -370,6 +375,7 @@ def main() -> None:
         arguments.data,
         protocol_id=config.protocol_id,
         protocol_sha256=protocol_sha256,
+        git_commit=git_commit,
         retained_probes=len(probes),
         retained_samples=cohort.audit.retained_samples,
     )

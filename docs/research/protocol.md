@@ -1,6 +1,7 @@
 # Research protocol
 
-Protocol status: **draft, no eligible data artifact and no result yet**.
+Protocol ID: `gse87571-hg19-caduceus-ps-v2`
+Status: **frozen before neural embedding/training**
 
 ## Question
 
@@ -9,159 +10,188 @@ Does reference DNA sequence around an autosomal CpG contain enough information t
 1. its empirical cross-person correlation with other CpGs in whole blood; and
 2. its empirical cross-person Pearson correlation with chronological age?
 
-The unit of prediction is a locus. The model never receives an individual's genome or age.
-Accordingly, a positive result supports sequence predictability of cohort-level locus properties;
-it does not by itself establish a causal mechanism or within-person epigenetic drift.
+The unit of prediction is a locus. The model never receives an individual's genome, beta vector,
+or age. A positive result would establish predictability of cohort-level locus properties from
+reference sequence; it would not by itself establish a causal mechanism or within-person drift.
 
 ## Cohort and assay
 
-- GSE40279: 656 whole-blood samples measured on Illumina HumanMethylation450.
-- Sample metadata: age, gender, ethnicity, source, and plate from the series matrix.
-- GPL13534 v1.1 manifest: GRCh37/hg19 coordinates.
-- Reference: UCSC hg19 plus strand, archive MD5
-  `806c02398f5ac5da8ffd6da2d1d5d1a9` for `hg19.fa.gz`.
+- accession: GSE87571;
+- assay: Illumina HumanMethylation450 whole blood;
+- raw input: 732 exact red/green IDAT pairs;
+- phenotype-eligible: 729;
+- retained after sample detection QC: 706;
+- retained metadata: 374 female and 332 male subjects, ages 14–94;
+- manifest: GPL13534 v1.1, GRCh37/hg19;
+- reference: UCSC hg19 plus strand.
 
-The exhaustive reference audit verifies all 405,610 post-mask coordinates as plus-strand CpGs.
-At the common 65,536-base window, 15 loci fail chromosome boundaries and 2,022 contain non-ACGT
-reference bases, leaving 403,573 loci. Their ordered probe fingerprint is
-`6a647c74a664bc693f67013c51046d163499839c843486f1c26ce6c5aa4ab4cf`; the exact decompressed
-FASTA SHA-256 is `92b96d16b307d824f3b6b9dc63feb237a75226f82ca2166d51ecec039bee4449`.
+The primary switch from GSE40279 was made because the latter's authentic IDATs were unavailable.
+GSE87571 was selected before target or model results were available because it provides raw arrays
+and age metadata. Its series matrix does not provide the ethnicity field available in the original
+GSE40279 plan; ethnicity is therefore neither imputed nor used.
 
-The complete public-input audit pins the series matrix SHA-256
-`1f6ef8b5ce08f9a5f1c09b047b36d1f3342757b6e8e19dce0398581bb76807eb`, sample-key SHA-256
-`dbb7c510da6a90bd2ff203564288b3b3400298c9d50217377a347f2ef2a9e7f9`, and resulting ordered
-sample fingerprint `f0bf579bb37e25dee7a7f9c3c29a5d498a506ec2226514ee1651c833b4707d61`.
+## Preprocessing
 
-The primary run requires raw paired red/green IDATs. GEO does not currently provide them; see
-[`../pipelines/data-preprocessing.md`](../pipelines/data-preprocessing.md).
+Pinned seSAMe 1.30.1 under R 4.6.0/Bioconductor 3.23 is the primary processor. The exact pipeline
+per array is `QCD`, pOOBAH p-values and threshold 0.05, then noob. Python methylprep was rejected
+after a preregistered 12-array parity audit failed detection, quality-mask, and beta-difference
+thresholds.
 
-## Probe universe
+Starting from canonical autosomal GPL13534 CpGs:
 
-Starting from GPL13534, remove:
+- union Chen cross-reactive and Zhou `MASK_general` exclusions;
+- full 65,536-base plus-strand hg19 window, centred `CG`, A/C/G/T only;
+- sample failure when more than 5% of candidate probes have detection `p >= 0.05`;
+- probe retention only when detection `p < 0.05` in every retained sample;
+- union of per-array seSAMe quality masks;
+- finite beta values in `[0,1]` and nonconstant rows.
 
-- explicit `rs` and `ch` assay probes;
-- any locus not on chromosomes 1 through 22;
-- probes failing detection QC after sample QC;
-- seSAMe HM450 quality-mask probes;
-- the union of Chen et al. cross-reactive/polymorphic probes and Zhou et al. `MASK.general`;
-- probes with missing, non-finite, or constant beta vectors;
-- loci that cannot provide every configured full-length plus-strand hg19 window with an exact
-  centred `CG` and only A/C/G/T bases.
-
-Every removal is recorded as `(probe_id, reason, source)` in an exclusion ledger. Filtering never
-uses age correlation or co-methylation.
+The static sequence universe contains 403,573 loci. Cohort QC excludes 23 samples, 18,999
+quality-masked probes, and 37,946 detection-failing probes, leaving 346,628 probes by 706 samples.
+No values are imputed.
 
 ## Targets
 
-Let `B` be the retained probe-by-sample beta matrix. For each probe row:
+Let `B` be the retained probe-by-sample float64 beta matrix. Define:
 
 ```text
 X_i = (B_i - mean(B_i)) / ||B_i - mean(B_i)||_2
-```
+a   = (age - mean(age)) / ||age - mean(age)||_2
 
-Standardize chronological age identically to obtain `a`. Then:
-
-```text
-Y_ij = X_i @ X_j
+Y_ij  = X_i @ X_j
 rho_i = X_i @ a
 ```
 
-`X` and `rho` are cached. `Y` is never materialized globally; exact blocks are gathered by matrix
-multiplication from cached `X`. The implementation asserts numerical agreement with
-`torch.corrcoef` on deterministic audit blocks.
+Cache `X`, `a`, and `rho`. Do not materialize global `Y`; obtain training blocks and evaluation
+targets by exact dot products from `X`. The independently sealed audit compared a deterministic
+256-probe block with `torch.corrcoef`; maximum absolute error was
+`2.7755575615628914e-15`.
 
-Because every row of `X` is centred over `n_samples`, `rank(Y) <= n_samples - 1` (655 if all 656
-samples survive). This is a construction invariant, not an empirical model claim.
+Centering gives `rank(Y) <= 706 - 1 = 705`. Because sequence embeddings are 256-wide, the learned
+metric has a stricter useful dimension ceiling of 256.
 
 ## Sequence representation
 
-Primary window widths are 1,024, 4,096, 16,384, and 65,536 bases. An even window is centred on the
-plus-strand cytosine token; the following token must be guanine.
+Primary windows are 1,024, 4,096, 16,384, and 65,536 bases. Each uses the hg19 plus strand with
+the probe cytosine at `window / 2` and asserts that it is followed by G.
 
 Use frozen
 [`kuleshov-group/caduceus-ps_seqlen-131k_d_model-256_n_layer-16`](https://huggingface.co/kuleshov-group/caduceus-ps_seqlen-131k_d_model-256_n_layer-16)
-at revision `d89eeb853136ea64da7feb3d0c8e909771b17ae6`. Tokenization disables added special tokens and
-must return one token per base. The RCPS backbone returns two 256-channel orientation halves, so
-its raw final state must be exactly 512-wide. Cache the first, plus-strand 256-channel half at the
-cytosine index in fp16. The cached embedding width must be exactly 256.
+at revision `d89eeb853136ea64da7feb3d0c8e909771b17ae6`, checkpoint SHA-256
+`a3e6976fe90460ff5d90d371b457d0263dc65e156ea5651b4a452e98228daef2`.
 
-No mean pooling, reverse-complement augmentation, fine-tuning, or per-epoch embedding is part of
-the primary protocol.
+Disable special tokens and require one token per base. From the `[batch,window,512]` RCPS final
+backbone state, cache `hidden[:, window // 2, :256]` as fp16. Do not mean-pool, fine-tune,
+reverse-complement average, or re-embed per epoch.
 
 ## Model
 
-For embedding `e_i in R^256`, latent dimension `d`, matrix `W in R^(d x 256)`, and an independent
-age vector `w_age in R^d`:
+For cached embedding `e_i in R^256`, latent dimension `d`, matrix
+`W in R^(d x 256)`, and independent `w_age in R^d`:
 
 ```text
 z_i       = normalize(W e_i)
 Y_hat_ij  = z_i @ z_j
 rho_hat_i = z_i @ normalize(w_age)
 
-loss = mean((Y_hat - Y)^2) + lambda_age * mean((rho_hat - rho)^2)
+loss = MSE(Y_hat, Y) + lambda_age * MSE(rho_hat, rho)
 ```
 
-There is no bias and no weight decay. `w_age` is not a row of the Gram batch and is not produced by
-`W`. `d` is swept only through values at most `min(256, n_samples - 1)`. With `d >= 256`, the
-positive-semidefinite metric `M = W^T W` is unrestricted in rank; larger `d` does not add metric
-expressivity.
+`W` has no bias and no weight decay. `w_age` is a free parameter, not a row of the pair Gram matrix
+and not produced by `W`.
 
-## Batching
+Since
 
-Sample a training anchor, collect allowed training probes within a fixed genomic span around it,
-and repeat until the requested unique batch size is filled. The batch sampler sees chromosome and
-coordinate but not `Y`, `rho`, or embeddings. Loss uses all within-batch pairs, including the
+```text
+cos(W e_i, W e_j)
+  = e_i.T M e_j / sqrt((e_i.T M e_i)(e_j.T M e_j)),
+M = W.T W,
+```
+
+the pair head learns a positive-semidefinite Mahalanobis cosine metric. At `d = 256`, every rank
+allowed by the embedding width is available; larger `d` adds no expressivity.
+
+## Batching and optimization
+
+Sample an anchor from the allowed optimization partition and collect unique allowed probes within
+a 1,048,576-base genomic neighborhood, repeating until batch size 512. The sampler sees only
+chromosome, position, and partition membership. It never clusters using targets.
+
+Use Adam, learning rate 0.001, weight decay 0, 2,000 tuning steps, validation every 100 steps, and
+training seed 851733. The full batch loss contains all within-batch pairs, including the exact
 zero-loss diagonal.
 
 ## Splits
 
-Two split families are mandatory:
+Two primary split families are mandatory:
 
-- diverse held-out locus blocks, with anchors stratified by autosomal chromosome and island,
-  shore, shelf, or open-sea context;
-- a held-out chromosome.
+- 16 context-stratified 262,144-base held-out blocks spread across autosomes;
+- all chromosome-7 probes held out.
 
-Split selection is target-blind. A common training set is built by excluding every training locus
-within the maximum configured window width of any test locus. Half-open sequence intervals are
-then checked pairwise for every individual window width. Model selection uses a separately buffered
-validation subset drawn from the training universe; test targets remain sealed until evaluation.
+Primary counts:
 
-## Run order and grids
+| Split | Test | Buffered out of train | Complete train |
+|---|---:|---:|---:|
+| diverse blocks | 2,250 | 900 | 343,478 |
+| chromosome 7 | 20,938 | 0 | 325,690 |
 
-1. For every split and window, ordinary least squares on CpG density and GC content predicts `rho`.
-2. For every split and window, the frozen Caduceus embedding trains only the age objective.
-3. The full model sweeps window width first, then `d in {16, 32, 64, 128, 256}` and
-   `lambda_age in {0.1, 1, 10}`.
+The diverse split's closest shared-chromosome train/test cytosines are 65,605 bases apart. The
+chromosome split shares no chromosome. Exact half-open window non-overlap is asserted separately
+for all four windows.
 
-The secondary grids may be reduced using training-validation results, but no value is selected on
-the test set. Split and evaluation seeds are already fixed. Before this draft can become frozen,
-the strict configuration must also add batch construction, optimizer, step budget, validation
-cadence, checkpoint-selection rule, and training seeds. The current fixed-step trainer exists to
-test mathematical and data-flow contracts; it is not yet a frozen run orchestrator. Stage 1 is
-forbidden until those remaining choices are reviewed, implemented, and versioned.
+Model selection uses a second target-blind diverse-block split nested inside primary training:
+
+| Primary split | Validation | Validation buffer | Optimization |
+|---|---:|---:|---:|
+| diverse blocks | 1,535 | 530 | 341,413 |
+| chromosome 7 | 920 | 324 | 324,446 |
+
+Primary test targets never select hyperparameters or checkpoints.
+
+## Frozen run order
+
+1. Fit float64 OLS `rho ~ 1 + CpG density + GC content` for each split/window on complete primary
+   training.
+2. For each split/window, sweep age-only latent dimension
+   `d in {16,32,64,128,256}`.
+3. For each split/window, sweep the full model over those dimensions and
+   `lambda_age in {0.1,1,10}`.
+4. Refit selected configurations from initialization on complete primary training.
+5. Run one final evaluation and static-site compilation.
+
+Age-only selection minimizes validation age MSE. Full-model selection minimizes unweighted
+validation pair MSE plus age MSE so lambda candidates are judged on a common scale. Ties prefer
+smaller `d`, then smaller lambda.
 
 ## Evaluation
 
-Report independently:
+Report separately for both split families:
 
 - seen-by-held-out pair prediction;
 - held-out-by-held-out pair prediction;
-- Pearson correlation of `rho_hat` and `rho` across held-out probes.
+- held-out `corr(rho_hat,rho)` for sequence, age-only, and full stages.
 
-For pair predictions report MSE, Pearson correlation, and R-squared. Same-chromosome pairs are
-split into fixed absolute-distance bins; different-chromosome pairs form a separate `trans` bin.
-Fit the nonparametric distance-only reference from training pairs and freeze it before evaluating
-test pairs.
+For pair prediction, report uniform pooled metrics and the primary distance-stratified metrics in
+seven cis bins plus trans. Compare on identical frozen pair indices with a class-mean
+`f(|delta position|)` fit only from training-training targets.
 
-## Interpretation limits and diagnostics
+Metrics are count, MSE, Pearson correlation, R-squared, mean, and standard deviation. Undefined
+Pearson values for a constant distance reference are labeled undefined; model predictions are not
+allowed to be silently constant.
 
-- This is whole-blood age association, potentially including blood-cell composition effects; do
-  not call it cell-intrinsic drift without a separate analysis.
-- Caduceus was pretrained on a human reference genome. Locus holdout tests target-label
-  generalization, not sequence novelty relative to foundation-model pretraining.
-- Array probe density and design are nonuniform. Chemistry/design type and manifest context must be
-  reported as diagnostic strata even after normalization.
-- Nearby held-out pairs may have overlapping inputs. They remain valid for held-out-by-held-out
-  placement but are isolated in distance bins; seen/test windows never overlap.
-- Hyperparameter selection, failure analysis, or visualization of test results cannot revise this
-  protocol without creating a new protocol ID.
+## Interpretation limits
+
+- Whole-blood associations can include blood-cell composition effects.
+- Targets are not residualized for sex, slide, or other cohort covariates; autosomal associations
+  with those variables can therefore contribute to the learned population geometry.
+- GSE87571 is one public cohort; this protocol has no independent-cohort replication.
+- Caduceus was pretrained on reference-genome sequence, so locus holdout is label generalization,
+  not sequence novelty relative to pretraining.
+- Probe placement, chemistry, and manifest context remain nonuniform despite normalization.
+- Nearby held-out probes can have overlapping inputs; distance-stratified held-out×held-out
+  results expose rather than hide that ease.
+- A positive pair metric is predictive evidence, not proof that sequence causally determines
+  methylation covariance.
+- One frozen training seed measures the registered experiment, not seed-to-seed uncertainty.
+
+Any change after test evaluation requires a new protocol ID.

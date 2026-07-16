@@ -1,62 +1,74 @@
 # Genomic splits and leakage prevention
 
-## Threat model
+The split is a locus split, not a subject split. All 706 subjects define every retained locus
+target; held-out labels are probe rows and probe-pair correlations.
 
-The primary leakage risk is not duplicate labels; it is duplicate input sequence. Two symmetric
-windows of width `w` centred `delta` bases apart overlap whenever `abs(delta) < w`. A random probe
-split therefore leaks heavily at local boundaries.
+## Target blindness
 
-Split code is physically target-blind: it accepts only validated probe IDs, autosomal chromosome,
-one-based cytosine coordinate, genomic context, chromosome lengths, and a Torch RNG seed.
+Split construction receives only probe ID, chromosome, one-based hg19 cytosine position, genomic
+context, and seeded Torch RNG state. It cannot read beta values, `X`, `rho`, `Y`, embeddings, or
+model outputs. Co-methylated blocks are never inferred from the targets.
 
-## Diverse held-out locus blocks
+## Diverse-block primary split
 
-The word *block* avoids confusing the split unit with UCSC CpG islands. Anchors are sampled from
-every available chromosome-by-context stratum, where context is one of island, shore, shelf, and
-open sea. Each anchor defines a fixed physical held-out interval, and every eligible probe in that
-interval is held out. Candidate anchors must be far enough apart that held-out blocks do not
-overlap.
+Protocol v2 samples four 262,144-base blocks per context across chromosomes for each of island,
+shore, shelf, and open sea. The realized test partition contains 2,250 probes across 16 anchor
+blocks. It is deliberately distributed rather than one contiguous genome segment.
 
-The result is many small regions distributed across the genome, not one contiguous chromosome
-chunk and not blocks discovered from methylation correlations. The split artifact records anchors,
-intervals, per-chromosome/context counts, seed, and manifest fingerprint. Construction fails if
-either train or test lacks a requested context.
+Every otherwise training-eligible probe whose maximum-window interval could overlap a test
+interval is removed. This excludes 900 probes and leaves 343,478 complete-primary-training probes.
+
+At all four window widths, the closest train/test cytosines on a shared chromosome are 65,605
+bases apart. For the 65,536-base even windows, exact half-open intervals are therefore disjoint;
+the same explicit check also passes for 1,024, 4,096, and 16,384 bases.
 
 ## Held-out chromosome
 
-The second split holds out all eligible probes on a configured autosome. No same-chromosome
-train/test pair exists. The chromosome is chosen in the frozen protocol, not after comparing model
-performance.
+Chromosome 7 is the strict second split:
 
-## Common maximum-window buffer
+- 20,938 test probes;
+- 325,690 complete-primary-training probes;
+- no chromosome shared between train and test;
+- no possible train/test sequence overlap at any window.
 
-To keep the window sweep comparable, the training universe for every window uses the largest
-configured width `W_max`. A candidate training cytosine on the same chromosome is removed when its
-distance from any test cytosine is at most `W_max`. Using `<=` is one base more conservative than
-the half-open non-overlap condition.
+The two split families are evaluated and displayed independently.
 
-Validation anchors are selected from the remaining training universe and receive the same buffer
-relative to optimization probes. Test probes are never used for early stopping.
+## Nested validation
 
-## Required assertions
+Hyperparameters and checkpoint steps cannot use either primary test partition. A second,
+target-blind diverse-block split is drawn inside each primary training universe using seed 991027,
+then receives its own maximum-window buffer.
 
-For every configured width and every train/test locus pair on the same chromosome:
+| Primary split | Validation probes | Validation-buffer exclusions | Optimization probes |
+|---|---:|---:|---:|
+| diverse blocks | 1,535 | 530 | 341,413 |
+| held-out chromosome 7 | 920 | 324 | 324,446 |
+
+The minimum optimization/validation cytosine separation is 65,612 bases for the diverse primary
+split and 65,604 for the chromosome primary split. Exact non-overlap passes at every window.
+
+Final selected configurations are refit on the complete primary training partition, not merely the
+optimization subset.
+
+## Overlap definition
+
+For a probe cytosine at one-based `p` and even width `w`, use:
 
 ```text
-train_interval.end <= test_interval.start
-or
-test_interval.end <= train_interval.start
+start0 = (p - 1) - w / 2
+end0 = start0 + w
 ```
 
-The implementation checks nearest neighbors in sorted coordinate arrays rather than materializing
-all pairs. Tests include:
+Two windows overlap iff their chromosomes match and
+`max(start_a,start_b) < min(end_a,end_b)`. Touching half-open boundaries are not overlap.
 
-- equality at exact window width;
-- adjacent and identical positions;
-- different chromosomes;
-- even-window coordinate conversion;
-- every width in the configured 1,024/4,096/16,384/65,536 sweep;
-- randomized property cases comparing the optimized assertion with a brute-force oracle.
+The maximum-window buffer is an efficient construction step; it is not accepted as proof.
+`assert_no_window_overlap` independently checks the final index sets for each configured width,
+and the sealer repeats those checks after deserialization.
 
-The split manifest is written only after all widths pass. Embedding and training artifacts require
-that manifest fingerprint.
+## Evaluation pairs within the test set
+
+Two held-out probes may have overlapping sequence windows. That does not leak a training input
+into a test input, but it makes nearby held-out-by-held-out pairs easier and dependent. Those pairs
+remain valid placement questions and are therefore retained, but every pair result is reported by
+distance class and compared with the training-only distance baseline.

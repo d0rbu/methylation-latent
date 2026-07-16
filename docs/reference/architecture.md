@@ -1,62 +1,75 @@
 # Architecture
 
-The package separates untrusted external data, validated scientific state, and experiment
-orchestration.
+External bytes are refined into sealed scientific state before model code can consume them.
 
 ```text
-GEO metadata + IDAT exports + GPL13534 + exclusion lists + hg19 FASTA
+GSE87571 IDATs + phenotype + GPL13534 + masks + hg19
+                           |
+                           v
+                 pinned seSAMe outputs
+                           |
+                           v
+       cohort + target geometry + sequence features + splits
+                           |
+                           v
+                sealed 17-file data bundle
+                    /              \
+                   v                v
+        frozen evaluation pairs   Caduceus shard caches
+                   \                /
+                    v              v
+             sequence -> age-only -> full metric
                               |
                               v
-          validated samples, probes, beta matrix, and sequences
+                  held-out evaluation records
                               |
-                 +------------+-------------+
-                 |                          |
-                 v                          v
-        X and rho target artifact     split artifacts
-                 |                          |
-                 +-------------+------------+
-                               |
-                               v
-                  frozen Caduceus embeddings
-                               |
-                 +-------------+-------------+
-                 |             |             |
-                 v             v             v
-           sequence baseline  age-only    full metric
-                 |             |             |
-                 +-------------+-------------+
-                               |
-                               v
-                  typed evaluation records
-                               |
-                               v
-                       static results site
+                              v
+                      split-specific sites
 ```
 
 ## Modules
 
 | Module | Responsibility |
 |---|---|
-| `domain` | Phantom scalar types, probe/context records, and non-empty collections |
-| `genome` | GPL coordinate conversion, indexed FASTA access, plus-strand window audits, sequence features |
-| `targets` | Standardization, semantic tensor wrappers, Gram blocks, age targets, rank ceilings |
-| `splits` | Target-blind diverse blocks, chromosome holdout, buffers, overlap assertions |
-| `batching` | Reproducible genomic-window training batches from an allowed probe universe |
-| `model` | Linear latent metric, independent age vector, loss, and zero-decay optimizer |
-| `evaluation` | Pair classes, distance bins, distance-only reference, and metrics |
-| `artifacts` | JSON/safetensors schemas, hashes, eligibility, and prerequisite matching |
-| `site` | Static HTML generation from validated result artifacts |
-| `cli` | Thin orchestration over reusable typed functions |
+| `domain` | Phantom scalar types, loci, contexts, and non-empty probe sets |
+| `metadata` | Exact GEO phenotype and Sentrix identity parsing |
+| `manifest` | GPL13534 and byte-pinned Chen/Zhou exclusion parsing |
+| `processor_io` | Strict seSAMe binary output loading and processor comparisons |
+| `preprocessing` | Sample-first and complete-case detection filtering |
+| `cohort` | Static universe, GSE87571 cohort, ledgers, and probe-table persistence |
+| `genome` | Indexed hg19 access, coordinate conversion, windows, and sequence statistics |
+| `targets` | Standardization, semantic tensors, Gram blocks, `rho`, and rank ceilings |
+| `splits` | Target-blind block/chromosome splits, buffers, and overlap assertions |
+| `experiment_data` | Nested split and sequence-feature artifacts |
+| `data_bundle` | Closed-world 17-file bundle verification |
+| `embeddings` | Pinned Caduceus loading and centre-token inference |
+| `embedding_cache` | Restart-safe shard and finalized-cache contracts |
+| `batching` | Target-blind local genomic training batches |
+| `model` | Bias-free latent metric and independent age vector |
+| `training` | Validation-selected age-only/full tuning and refit |
+| `evaluation` | Pair populations, distance classes/reference, metrics, and PCA |
+| `evaluation_cache` | Immutable pair indices and exact target values |
+| `artifacts` / `storage` | Canonical JSON, hashes, and exclusive safetensors |
+| `site` | Strict site-data schema and static HTML generation |
+| `config` / `cli` | Frozen protocol and thin public commands |
 
 ## Dependency direction
 
-Core math never imports GEO, FASTA, Transformers, plotting, or methylprep. Data adapters refine
-external values into domain records; model and evaluation code consume only those records and
-tensors. Caduceus and methylprep run in preprocessing stages and are absent from the training loop.
-The pinned Python 3.11 Caduceus environment imports the shared `embeddings` module through
-`PYTHONPATH=src`; no second model-output interpretation is maintained.
+Core model/training code does not import GEO, FASTA, R, Transformers, or site code. seSAMe ends at
+typed processor exports. Caduceus ends at finalized fp16 embedding caches. Training sees only probe
+metadata, target tensors, split indices, and cached embeddings.
 
-## Artifact storage
+Torch is the only array library in project code and is imported as `torch as t`. NumPy is not a
+project dependency.
 
-Large artifacts live under a user-selected output root, not in Git. Tensor payloads use
-safetensors; metadata and results use strict JSON schemas. Pickle is not a project artifact format.
+## Orchestration
+
+The four scripts are deliberately thin:
+
+- `prepare_gse87571.py`: build an exclusive primary-data directory;
+- `seal_primary_data.py`: independently validate and close that directory;
+- `run_experiments.py`: execute restart-safe ordered stages;
+- `compile_results_site.py`: transform complete evaluation records into two static sites.
+
+Large artifacts live outside Git. Git contains protocol, code, tests, templates, and compact
+validated result summaries only.

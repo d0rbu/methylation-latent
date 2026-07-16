@@ -1,144 +1,133 @@
 # Data preprocessing
 
-## Public-source audit
+## Cohort choice
 
-[GSE40279](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE40279) contains 656
-HumanMethylation450 whole-blood samples. GEO currently lists:
+The original GSE40279 plan could not support a faithful primary run because GEO does not expose
+its paired IDATs. The user approved switching to
+[GSE87571](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE87571), a whole-blood
+HumanMethylation450 cohort with authentic raw arrays and age metadata.
 
-- processed average-beta tables;
-- a 5.0 GB compressed signal table with `AVG_Beta`, total intensity, `SignalA`, and `SignalB`;
-- a sample key and series matrix;
-- `GSE40279_RAW.tar`.
+The source audit found:
 
-The last name is misleading for this purpose: inspection shows that the tar contains only four
-GPL13534 manifest files. It contains no red/green IDAT pairs. The signal table also lacks the
-negative/control-probe measurements required by detection-p, noob, and functional normalization.
-The minfi guide explicitly notes that GenomeStudio exports without controls support only part of
-the preprocessing stack.
+- 732 distinct Sentrix identities;
+- exactly 1,464 gzip-valid IDAT files, one red and one green channel per identity;
+- 729 samples with age and gender;
+- three raw arrays with no usable phenotype record;
+- raw-inventory fingerprint
+  `20fccbecf4b7e7b36f3099daf6084d9042fc3d9074bfa4bf0ab154eeca694ae0`.
 
-Therefore:
+Every join is one-to-one across GSM accession, supplemental filename, Sentrix identity, IDAT
+prefix, processor output, phenotype row, and final tensor column. Lexical filename order is never
+used as sample order.
 
-- a `processed_geo_audit` artifact may exercise metadata, probe filtering, target math, splits,
-  and models;
-- it is permanently `audit_only` and cannot populate primary figures or baseline comparisons;
-- the primary experiment is blocked until authentic IDATs are obtained from the data generators,
-  an archival source, or another source whose identity can be matched exactly to all 656 GEO
-  samples.
+## Why seSAMe is primary
 
-Do not estimate detection p-values from the low tail of ordinary probes or claim that the supplied
-BeadStudio beta values are noob/funnorm output.
+Python `methylprep` 1.7.1 was tested first because it would have simplified orchestration. A
+target-blind 12-array subset selected across array identities was independently processed with
+methylprep and pinned seSAMe. The preregistered parity thresholds were not met:
 
-## Tool choice
+| Check | Required | Observed |
+|---|---:|---:|
+| overall detection agreement | at least 0.999 | 0.978631 |
+| minimum per-array detection agreement | at least 0.995 | 0.973857 |
+| beta median absolute error | at most 0.001 | 0.002801 |
+| beta 99.9th-percentile absolute error | at most 0.01 | 0.074160 |
+| minimum per-array beta correlation | at least 0.999 | 0.999329 |
+| quality-mask union disagreement | 0 | 653 |
 
-The primary implementation uses
-[`methylprep`](https://life-epigenetics-methylprep.readthedocs-hosted.com/) 1.7.1 in its default
-seSAMe-compatible mode because it preserves a Python orchestration path while implementing:
+High beta correlation did not rescue failed interchangeability. The audit records
+`decision = sesame_primary`; thresholds were not loosened.
 
-- pOOBAH out-of-band detection p-values;
-- HM450 quality masking;
-- noob background correction;
-- nonlinear dye-bias correction;
-- Type-I channel-switch inference;
-- export of control probes, uncorrected intensities, and per-probe p-values.
+The primary processor is therefore R/Bioconductor seSAMe:
 
-This choice is conditional on a parity gate. Before processing the full cohort, a preregistered
-set of at least 12 arrays spanning plates and positions is processed independently with the pinned
-Bioconductor seSAMe `QCDPB` pipeline. Protocol v1 pins R 4.6, Bioconductor 3.23, seSAMe 1.30.1,
-and sesameData 1.30.0; an exact resolved R dependency lock remains a protocol-freeze requirement.
-Probe inclusion, pOOBAH calls, and normalized beta values are compared. Protocol v1 fixes the
-subset at exactly 12 arrays, chosen deterministically from plate and Sentrix-position metadata
-without age, beta, or target values. It requires:
+- official Bioconductor image pinned at
+  `sha256:b10002b39efa30c3779ad839549806ebdbb29b3266f0d2428478b04426e55929`;
+- R 4.6.0, Bioconductor 3.23, seSAMe 1.30.1, sesameData 1.30.0;
+- complete dependency graph in `environments/sesame/renv.lock`;
+- per-array `QCD`, raw pOOBAH p-values, `pOOBAH(..., pval.threshold=0.05)`, and `noob`;
+- exclusive float64 beta/detection outputs and quality-mask bytes.
 
-- identical sample-retention decisions;
-- identical all-retained-array complete-probe sets;
-- at least 99.9% overall and 99.5% per-array pOOBAH pass/fail agreement;
-- normalized-beta median absolute difference at most 0.001 and 99.9th-percentile absolute
-  difference at most 0.01;
-- per-array beta correlation of at least 0.999.
-
-The executable gate is `assert_processor_parity`. A failed audit switches the primary processor to
-seSAMe; it does not loosen thresholds or average the two outputs.
-
-The methylprep environment is isolated from the Torch analysis environment because its published
-release targets an older Python scientific stack. The exact command, package resolution, standard
-output, and checksums are captured in the preprocessing run record.
+This is less convenient than all-Python preprocessing but is the faithful path. The downstream
+pipeline remains Torch/Python.
 
 ## Primary QC order
 
-1. Verify two IDATs per sample, Sentrix ID/position, file hashes, readable control probes, platform
-   size, and exact linkage through `GSE40279_sample_key.txt.gz` to all 656 GSM records.
-2. Parse age, gender, ethnicity, source, and plate from the series matrix; reject duplicate,
-   missing, or contradictory fields.
-3. Compute pOOBAH at `p < 0.01` from uncorrected out-of-band/control signals.
-4. Remove samples for which more than 1% of candidate CpG probes fail.
-5. On retained samples, retain only probes that pass pOOBAH in **every** sample. This preserves one
-   common sample axis and forbids imputation or pair-specific observation sets.
-6. Apply noob and nonlinear dye-bias correction and export float64 beta values.
-7. Apply the independent probe exclusions below.
-8. Reject non-finite/out-of-range beta values and constant probe rows.
+1. Verify exact source hashes, 732 paired raw identities, platform HM450, and phenotype joins.
+2. Run seSAMe without reading age or methylation targets.
+3. Start from the 403,573-locus common sequence universe defined below.
+4. Exclude phenotype-missing arrays.
+5. Mark a sample failed when more than 5% of candidate probes have pOOBAH
+   `p >= 0.05`; 23 phenotype-eligible samples failed.
+6. Across the 706 retained samples, require every retained probe to have
+   `p < 0.05` in every sample; 37,946 probes failed.
+7. Exclude any probe marked by the union of per-array seSAMe quality masks; 18,999 probes failed.
+8. Reject missing, non-finite, out-of-range, or constant beta rows; no additional constant rows
+   remained.
 
-Threshold changes require a new protocol ID. Detection decisions are made before age or target
-construction.
+This yields 346,628 probes by 706 samples: 374 female and 332 male subjects spanning ages 14–94.
+There is no imputation and no pair-specific sample axis. Gender is audited metadata, not a
+regression covariate in the frozen target definition.
 
-## Independent probe exclusions
+An auxiliary full-cohort preprocessing at pOOBAH threshold 0.01 produced beta values exactly
+identical to the 0.05 run over 353,132,172 values because exported betas are unmasked and the
+threshold affects QC decisions, not the noob beta computation. Protocol v2 nevertheless freezes
+0.05 for both sample and complete-case probe decisions.
 
-The exclusion ledger is the union of:
+## Probe and reference exclusions
 
-- non-`cg` IDs (`rs`, `ch`, controls);
-- chromosomes X and Y;
-- methylprep/seSAMe HM450 recommended quality mask;
-- Chen et al. (2013) 29,233-probe cross-reactive/non-specific list;
-- Zhou et al. (2017)
-  [`MASK.general`](https://zwdzwd.github.io/InfiniumAnnotation/manifest.html), which combines
-  mapping, 30-base non-uniqueness, extension-base, Type-I color-switch, and common-SNP flags.
+The target-blind static universe applies:
 
-The downloaded list bytes, upstream URL, version, SHA-256, and counts by reason are mandatory
-metadata. The union is by probe ID and preserves every source/reason; overlapping lists are not
-silently deduplicated in the audit ledger.
+- canonical `cg` identifiers only, dropping `rs`, `ch`, controls, and malformed IDs;
+- autosomes 1–22 only;
+- GPL13534 hg19 coordinates only;
+- seSAMe quality filtering downstream across retained samples;
+- Chen et al. cross-reactive/non-specific probes;
+- Zhou et al. hg19 `MASK_general`, including mapping and common-SNP risks;
+- full 65,536-base plus-strand window availability and A/C/G/T-only reference sequence.
 
-The v1 bytes are pinned as follows:
+Pinned source hashes:
 
-- Chen `48639-non-specific-probes-Illumina450k.csv`, recovered from a commit-pinned mirror because
-  the paper's original SickKids download endpoint is no longer reliable: SHA-256
-  `4e962d36821f6f6fcd8b81cc0558090c028e54fbdb2c039a5712f9b471d9d89e`, exactly 29,233 CpGs.
-- Zhou versioned hg19 HM450 table `InfiniumAnnotation/20180808`: SHA-256
-  `94aaa52274738bbf8d767e56512b8fc36893c2cabffa202870531950bf522f0e`, exactly 485,577 rows,
-  65,574 `MASK_general=TRUE` rows, and 64,987 masked `cg` IDs.
+- GPL13534 v1.1:
+  `df3d5009d9b5b878507ba330bbcd7d2012455f6d0aa92c2df897f53a28452c33`;
+- Chen list:
+  `4e962d36821f6f6fcd8b81cc0558090c028e54fbdb2c039a5712f9b471d9d89e`;
+- Zhou 2018-08-08 hg19 table:
+  `94aaa52274738bbf8d767e56512b8fc36893c2cabffa202870531950bf522f0e`.
 
-The strict union audit over the GPL13534 autosomal CpG universe retains 405,610 of 470,870 probes
-before detection QC. It writes 91,628 source/reason ledger rows because Chen/Zhou overlaps are
-preserved; it does not mistake ledger-row count for unique excluded-probe count.
+GPL13534 contains 485,577 rows and 470,870 manifest-valid autosomal CpGs. The Chen/Zhou union
+leaves 405,610. Every one is checked against UCSC hg19; 15 fail the maximum-window boundary and
+2,022 contain a non-ACGT base, leaving 403,573. Overlapping exclusion reasons are preserved in the
+ledger rather than silently deduplicated.
 
-The subsequent exhaustive hg19 audit confirms `CG` at all 405,610 one-based `MAPINFO` coordinates.
-The common 64 kb sequence-universe gate retains 403,573 after 15 boundary and 2,022 non-ACGT
-reference exclusions. These are deterministic reference exclusions, not detection-QC outcomes.
+## Build and strand
 
-## Manifest and build
+The reference is UCSC hg19/GRCh37:
 
-Use GPL13534 v1.1 CSV, SHA-256
-`df3d5009d9b5b878507ba330bbcd7d2012455f6d0aa92c2df897f53a28452c33`.
-Every retained row must say genome build `37`, have an autosomal chromosome and positive `MAPINFO`,
-and contain one `[CG]` marker in `Forward_Sequence`.
+- compressed FASTA MD5 `806c02398f5ac5da8ffd6da2d1d5d1a9`;
+- exact decompressed payload SHA-256
+  `92b96d16b307d824f3b6b9dc63feb237a75226f82ca2166d51ecec039bee4449`.
 
-The reference is UCSC hg19. No liftOver is part of the primary protocol. An alternate build is a
-new experiment and must include explicit chain, source/target build, unique-mapping, strand, and
-round-trip audit artifacts.
+`MAPINFO` is interpreted once as a one-based plus-strand cytosine coordinate. No liftOver is used.
+All 405,610 post-mask coordinates were verified to point to `CG` on the reference plus strand.
 
-## Metadata alignment
+## Frozen outputs
 
-Sample order is never inferred from lexical filename order. The series matrix maps GSM accession
-to subject metadata; the sample key maps subject ID to Sentrix ID/position; the IDAT processor emits
-Sentrix identity. Joining these must be one-to-one at every edge, and the final beta columns and age
-rows share one stored sample-order fingerprint.
+`scripts/prepare_gse87571.py` creates a new directory exclusively. It writes:
 
-The fully downloaded series matrix must pass its gzip CRC trailer before parsing. Protocol v1 pins
-the series-matrix, sample-key, manifest, and final ordered-sample hashes in TOML; a correct sample
-count with different bytes or order is still an error.
+- complete cohort and static exclusion ledgers;
+- ordered probe tables and order fingerprints;
+- float64 beta, `X`, standardized age, and `rho` tensors;
+- target, sequence-feature, split, sensitivity, and summary metadata.
 
-## Relevant sources
+`scripts/seal_primary_data.py` then independently reloads and recomputes the high-value
+invariants, verifies all expected files, and creates the 17-file `bundle.json`. Any extra or
+modified file invalidates the bundle. The bundle also records the exact clean Git commit of the
+sealer; sealing is refused when the worktree contains tracked or untracked changes.
 
-- [GSE40279 accession](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE40279)
+## Sources
+
+- [GSE87571 accession](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE87571)
 - [GPL13534 accession](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GPL13534)
-- [methylprep CLI and processing semantics](https://life-epigenetics-methylprep.readthedocs-hosted.com/en/latest/docs/cli.html)
-- [minfi user guide](https://bioconductor.org/packages/release/bioc/vignettes/minfi/inst/doc/minfi.html)
-- [seSAMe manual](https://bioconductor.org/packages/release/bioc/manuals/sesame/man/sesame.pdf)
+- [seSAMe package and manual](https://bioconductor.org/packages/sesame)
+- [Zhou HM450 annotation](https://zwdzwd.github.io/InfiniumAnnotation/manifest.html)
+- [Chen et al. cross-reactive probe paper](https://doi.org/10.4161/epi.23470)

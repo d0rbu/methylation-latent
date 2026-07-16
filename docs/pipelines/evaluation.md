@@ -1,73 +1,101 @@
 # Evaluation
 
-## Run order is enforced
+## Immutable run order
 
-For an identical data/split/window fingerprint:
+For each exact data/split/window identity:
 
-1. fit CpG density plus GC content to `rho` with training probes;
-2. fit the Caduceus age-only head with no pair objective;
-3. train and evaluate the full metric.
+1. fit CpG density plus GC content to `rho`;
+2. fit Caduceus plus an age-only latent head;
+3. tune and refit the full pair-plus-age metric;
+4. evaluate all frozen models once on the test partition.
 
-The registry rejects stage 3 without completed stage-1 and stage-2 records. Numbers are read from
-artifacts, never copied from logs or memory.
+Stages 1 and 2 are durable prerequisites. Stage 3 cannot run without their matching hashes.
 
-## Hand-crafted baseline
+## Sequence baseline
 
-For each exact input window:
+For each exact window:
 
-- GC content is the fraction of bases equal to G or C;
-- CpG density is the fraction of adjacent base pairs equal to CG, with denominator `window - 1`.
+- GC content is `(G + C) / window`;
+- CpG density is the number of adjacent `CG` dinucleotides divided by `window - 1`.
 
-Fit an intercept plus these two features by float64 ordinary least squares on training probes only.
-Constant or rank-deficient design columns are errors. Evaluate on held-out probes.
+An intercept plus both features is fit by float64 ordinary least squares on complete primary
+training probes. Rank-deficient designs are errors.
+
+The frozen baseline is already complete. At 1,024 bases it reaches age-correlation Pearson 0.4626
+on the diverse-block test set and 0.5126 on held-out chromosome 7. These are the bars the neural
+age heads must beat; later results never replace them by hand.
 
 ## Pair populations
 
-Never combine:
+Two populations are reported independently:
 
-- **seen-by-held-out:** one training probe and one test probe;
-- **held-out-by-held-out:** two distinct test probes, counted once as an unordered pair.
+- **seen-by-held-out:** one complete-primary-training probe and one test probe;
+- **held-out-by-held-out:** two distinct test probes, stored once as an unordered pair.
 
-Diagonal pairs are excluded from evaluation. Any sampling cap, seed, and stratum counts are stored;
-all compared models use the same pair-index artifact.
+Diagonals are excluded. The evaluation cache was constructed before neural training and stores
+the pair indices, distance class, and exact `X_i @ X_j` target for:
 
-## Distance strata
+- up to 1,000,000 uniformly sampled pairs per test population;
+- up to 100,000 pairs per distance class per test population;
+- 100,000 training-training pairs per distance class for the distance reference.
 
-For loci on the same chromosome, bin absolute cytosine distance using frozen half-open edges:
+Seeds and realized counts are in the cache metadata. Compared models cannot resample.
+
+## Distance classes
+
+Same-chromosome absolute cytosine distance uses fixed half-open bins:
 
 ```text
-[0, 1 kb), [1, 4 kb), [4, 16 kb), [16, 64 kb),
-[64, 256 kb), [256 kb, 1 Mb), [1 Mb, infinity)
+[0,1 kb), [1,4 kb), [4,16 kb), [16,64 kb),
+[64,256 kb), [256 kb,1 Mb), [1 Mb,infinity)
 ```
 
-Different-chromosome pairs form `trans`; they have no `|delta position|` and are never placed into
-a cis bin. Report every pair metric per bin and the number of pairs. A pooled summary may be shown
-only as a secondary aggregate adjacent to, never instead of, the bins.
+Different-chromosome pairs are `trans`; they never receive a fake genomic distance. Pooled uniform
+metrics are secondary summaries. Distance-stratified results are the primary interpretation.
 
 ## Distance-only reference
 
-Fit `f(|delta position|)` from training-training target pairs only, using the same fixed bins and
-the mean target correlation in each bin. The trans baseline is a separate training trans mean.
-Freeze and hash that table before applying it to either test pair population. Empty bins are errors;
-there is no interpolation fallback.
+For each split, `f(|delta position|)` is the mean target correlation in each class among the frozen
+training-training pairs. The trans mean is fit separately. The table is hashed before application
+to either test population.
 
-## Metrics
+The held-out-chromosome seen-by-held-out population is necessarily all trans. In that case a
+constant distance-reference prediction has undefined Pearson correlation; the artifact records
+the null status explicitly rather than manufacturing a number.
 
-For every model, pair population, and distance class report:
+## Model metrics
 
-- pair count;
-- target and prediction means/standard deviations;
-- MSE;
-- Pearson correlation between predicted and target correlations;
-- R-squared against the target mean for that exact evaluation stratum.
+For each pair population report:
 
-For age report held-out probe count, MSE, and Pearson `corr(rho_hat, rho)`, shown next to both
-baseline stages. Confidence intervals, if added, bootstrap held-out genomic blocks rather than
-individual highly correlated pairs.
+- uniform pair count, MSE, Pearson correlation, R-squared, target/prediction mean, and standard
+  deviation;
+- the same fields separately for every realized distance class;
+- the training-only distance-reference metrics on the identical pair indices.
+
+For age report held-out probe count, MSE, Pearson correlation, and R-squared for:
+
+- CpG density plus GC;
+- Caduceus age-only;
+- full latent metric.
+
+No metric is mixed across split families, pair populations, or distance classes.
+
+## Hyperparameter selection
+
+Each split has a separately buffered validation partition nested inside primary training.
+Candidates run for 2,000 steps and validate every 100 steps.
+
+- age-only candidates select minimum validation age MSE;
+- full candidates select minimum unweighted pair MSE plus age MSE;
+- ties prefer smaller latent dimension, then smaller lambda;
+- the selected step/configuration is refit from initialization on complete primary training;
+- test targets are loaded only by the final evaluation stage.
+
+The full training objective still uses configured `lambda_age`; the unweighted validation sum is
+only the frozen cross-lambda selection rule.
 
 ## Latent projection
 
-The site uses a deterministic 2D PCA/SVD projection of held-out latent vectors, with probes colored
-by genomic context. Projection is descriptive and receives no metric status. Fit projection axes on
-training latent vectors and apply them to held-out vectors to avoid using test geometry to choose
-the view.
+At the 16,384-base window, deterministic two-dimensional PCA axes are fit on complete primary
+training latent vectors and applied to every test vector. Points are colored by island, shore,
+shelf, or open-sea context. This panel is descriptive and never selects a model.

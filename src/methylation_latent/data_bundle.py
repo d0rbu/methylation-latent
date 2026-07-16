@@ -16,9 +16,10 @@ from methylation_latent.artifacts import (
     write_canonical_json_exclusive,
 )
 
-_SCHEMA = "methylation-latent.primary-data-bundle.v1"
+_SCHEMA = "methylation-latent.primary-data-bundle.v2"
 _BUNDLE_FILE = "bundle.json"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", flags=re.ASCII)
+_GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$", flags=re.ASCII)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ class BundledFile:
 class PrimaryDataBundle:
     protocol_id: str
     protocol_sha256: str
+    git_commit: str
     retained_probes: int
     retained_samples: int
     files: tuple[BundledFile, ...]
@@ -56,6 +58,8 @@ class PrimaryDataBundle:
     def __post_init__(self) -> None:
         if not self.protocol_id or _SHA256.fullmatch(self.protocol_sha256) is None:
             raise ValueError("data bundle requires a protocol ID and SHA-256")
+        if _GIT_COMMIT.fullmatch(self.git_commit) is None:
+            raise ValueError("data bundle Git commit must be 40 lowercase hex characters")
         if self.retained_probes <= 0 or self.retained_samples <= 1:
             raise ValueError("data bundle retained dimensions are invalid")
         paths = tuple(file.path for file in self.files)
@@ -67,6 +71,7 @@ class PrimaryDataBundle:
             "schema": _SCHEMA,
             "protocol_id": self.protocol_id,
             "protocol_sha256": self.protocol_sha256,
+            "git_commit": self.git_commit,
             "retained_probes": self.retained_probes,
             "retained_samples": self.retained_samples,
             "files": [file.as_json() for file in self.files],
@@ -95,6 +100,7 @@ def seal_primary_data_bundle_exclusive(
     *,
     protocol_id: str,
     protocol_sha256: str,
+    git_commit: str,
     retained_probes: int,
     retained_samples: int,
 ) -> PrimaryDataBundle:
@@ -105,6 +111,7 @@ def seal_primary_data_bundle_exclusive(
     bundle = PrimaryDataBundle(
         protocol_id=protocol_id,
         protocol_sha256=protocol_sha256,
+        git_commit=git_commit,
         retained_probes=retained_probes,
         retained_samples=retained_samples,
         files=_inventory(directory),
@@ -145,6 +152,7 @@ def verify_primary_data_bundle(
         "schema",
         "protocol_id",
         "protocol_sha256",
+        "git_commit",
         "retained_probes",
         "retained_samples",
         "files",
@@ -152,10 +160,12 @@ def verify_primary_data_bundle(
     if not isinstance(raw, dict) or set(raw) != expected:
         raise ValueError("primary-data bundle envelope differs")
     files_raw = raw["files"]
+    git_commit = raw["git_commit"]
     retained_probes = raw["retained_probes"]
     retained_samples = raw["retained_samples"]
     if (
         not isinstance(files_raw, list)
+        or not isinstance(git_commit, str)
         or isinstance(retained_probes, bool)
         or not isinstance(retained_probes, int)
         or isinstance(retained_samples, bool)
@@ -171,6 +181,7 @@ def verify_primary_data_bundle(
     bundle = PrimaryDataBundle(
         protocol_id=protocol_id,
         protocol_sha256=protocol_sha256,
+        git_commit=git_commit,
         retained_probes=retained_probes,
         retained_samples=retained_samples,
         files=tuple(_parse_file(item) for item in files_raw),

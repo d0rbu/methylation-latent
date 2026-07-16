@@ -1,37 +1,74 @@
 # Results site and Cloudflare tunnel
 
-The site is static and generated only from validated result artifacts. It has no backend and no
-ability to mutate experiments.
+The site is a read-only static compilation of validated evaluation artifacts. It has no backend
+and cannot mutate a run.
 
 ## Required panels
 
-- window-width sweep for seen-by-held-out and held-out-by-held-out metrics;
-- distance-binned pair metrics with the training-fitted `f(|delta position|)` reference;
-- held-out age correlation next to the sequence and Caduceus age-only baselines;
-- deterministic 2D latent projection colored by island/shore/shelf/open-sea context;
-- protocol ID, artifact hashes, split family, retained counts, and eligibility label.
+Each split-specific page contains:
 
-An empty registry produces a visible “no eligible runs” page, not demo numbers.
-For validated data, the generator additionally requires the split family, retained probe/sample
-counts, and exact data/split SHA-256 fingerprints. Every selected window must contain both pair
-populations, all three age stages, and at least one distance stratum per population. Duplicate or
-partial panel rows are rejected before publication.
+- window-sweep curves for seen-by-held-out and held-out-by-held-out pair metrics;
+- distance-class pair metrics with the training-fitted reference mean;
+- age results for sequence, Caduceus age-only, and full models;
+- a training-fitted 2D latent projection of every held-out probe, colored by context;
+- protocol, split, retained counts, eligibility, and artifact identities.
 
-## Generate and serve locally
+The diverse-block and held-out-chromosome pages are separate. The compiler rejects absent windows,
+partial age stages, missing pair populations, identity drift, or an incomplete projection.
+
+## Compile
 
 ```bash
-uv run methylation-latent build-site \
-  --registry /absolute/path/to/results/registry.json \
-  --output /absolute/path/to/generated-site
+export DATA_ROOT=/absolute/path/to/methylation-latent-data
+export RUN_ROOT="$DATA_ROOT/artifacts/gse87571-hg19-caduceus-ps-v2"
 
-uv run python -m http.server 8080 --directory /absolute/path/to/generated-site
+uv run python scripts/compile_results_site.py \
+  --config configs/protocol-v2.toml \
+  --data "$RUN_ROOT/data" \
+  --experiments "$RUN_ROOT/experiments" \
+  --results-output "$RUN_ROOT/site-data" \
+  --site-template site-template \
+  --root-template site-root-template \
+  --site-output "$RUN_ROOT/site"
 ```
 
-Verify locally at `http://127.0.0.1:8080` before exposing it.
+Both output directories must be absent. Exclusive generation prevents stale files from surviving
+into a new site.
 
-## Named Cloudflare tunnel
+## Serve and verify locally
 
-Install `cloudflared` from Cloudflare's signed package or release and record its version. Then:
+```bash
+uv run python -m http.server 8080 --bind 127.0.0.1 \
+  --directory "$RUN_ROOT/site"
+```
+
+From a second process:
+
+```bash
+curl --fail --silent http://127.0.0.1:8080/ | \
+  grep --fixed-strings gse87571-hg19-caduceus-ps-v2
+curl --fail --silent http://127.0.0.1:8080/diverse-blocks/
+curl --fail --silent http://127.0.0.1:8080/held-out-chromosome/
+```
+
+Record the server PID and exact site directory.
+
+## Temporary Cloudflare tunnel
+
+The validated environment uses `cloudflared` 2026.7.2. After the local checks:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+Capture the process ID, log, and generated `trycloudflare.com` URL. Fetch that URL from a separate
+process and verify HTTP 200 plus the protocol marker. A quick-tunnel URL is ephemeral and must not
+be described as a permanent deployment.
+
+## Named tunnel
+
+For a stable user-owned hostname, follow Cloudflare's
+[locally managed tunnel documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-local-tunnel/):
 
 ```bash
 cloudflared tunnel login
@@ -39,30 +76,8 @@ cloudflared tunnel create methylation-latent
 cloudflared tunnel route dns methylation-latent methylation-latent.example.org
 ```
 
-Use `~/.cloudflared/config.yml`:
+Keep the tunnel UUID, account identifiers, credentials JSON, and real hostname out of Git. The
+ingress service should point only at the verified local origin.
 
-```yaml
-tunnel: <tunnel-uuid>
-credentials-file: /home/<user>/.cloudflared/<tunnel-uuid>.json
-
-ingress:
-  - hostname: methylation-latent.example.org
-    service: http://127.0.0.1:8080
-  - service: http_status:404
-```
-
-Run:
-
-```bash
-cloudflared tunnel --config ~/.cloudflared/config.yml run methylation-latent
-```
-
-Do not commit credentials, account IDs, tunnel UUIDs, or real hostnames. For a temporary preview,
-`cloudflared tunnel --url http://127.0.0.1:8080` is acceptable, but its random URL is not a durable
-results endpoint. See Cloudflare's
-[locally managed tunnel documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-local-tunnel/).
-
-## Publication check
-
-Fetch the public URL from a separate process and assert status 200, content hash, protocol ID, and
-eligibility badge. The tunnel does not make an audit-only run primary.
+The tunnel confers no scientific validity; it merely exposes bytes already accepted by the site
+compiler.

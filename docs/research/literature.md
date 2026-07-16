@@ -1,61 +1,71 @@
 # Prior-work search
 
-Search date: 2026-07-15.
+Search date: 2026-07-16.
 
 ## Question searched
 
-Has a learned model already mapped reference DNA sequence at CpG loci directly to an empirical
-cross-person CpG-by-CpG co-methylation/correlation geometry?
+Has a learned model already mapped reference DNA sequence at CpG loci directly to empirical
+cross-person CpG-by-CpG co-methylation or correlation geometry?
 
-Searches combined terms for DNA sequence, CpG, co-methylation, covariance/correlation matrices,
-graph prediction, methylation-correlated blocks, deep learning, and foundation models. The search
-covered PubMed/PMC, arXiv, and direct paper/repository pages. This is a best-effort literature
+Searches combined DNA sequence, CpG, co-methylation, covariance/correlation matrix, graph
+prediction, methylation-correlated blocks, deep learning, foundation model, and epigenetic age.
+Sources included PubMed/PMC, publisher pages, arXiv, and OpenReview. This is a dated best-effort
 search, not proof of absence.
 
 ## Conclusion
 
-No exact prior implementation was found. Existing work falls into distinct neighboring categories:
+No exact prior implementation was found. The nearest work uses one of the two ingredients while
+targeting a different object:
 
-- **Observed co-methylation discovery.** MCB, coMethDMR, and correlated methylation unit methods
-  construct blocks or graphs from measured methylation correlations. For example, Gunasekara et
-  al. build correlation matrices from observed 450K/EPIC cohorts and segment them into correlated
-  methylation units; they do not predict the matrix from sequence.
-- **Per-site methylation prediction.** DeepCpG and related methods use local DNA sequence, often
-  together with neighboring observed methylation, to impute a cell/sample's methylation state.
-  PretiMeth explicitly uses observed neighboring or co-methylated loci as features. These targets
-  are per-sample methylation, not a locus-by-locus population covariance map.
-- **Mechanistic spatial covariance.** Mean-field methylation models can predict covariance between
-  nearby sites under a specified stochastic methylation process. They do not learn an empirical
-  cross-person covariance map from genomic sequence representations.
-- **Age prediction with observed graphs.** GraphAge and related work use observed methylation and
-  a predefined co-methylation graph to predict an individual's age. They solve the inverse unit of
-  prediction: individual age from methylation, not locus age association from sequence.
+- **Observed co-methylation discovery.** MCBs, correlated methylation units, and coMethDMR infer
+  regions or graphs from methylation correlations already measured in a cohort. They do not place
+  unseen loci from sequence.
+- **Per-site methylation prediction.** DeepCpG and related sequence models predict an
+  individual's or cell's methylation state, often with neighboring observed methylation. Their
+  target is not a locus-by-locus population covariance map.
+- **Mechanistic local covariance.** Stochastic and mean-field methylation models derive covariance
+  among nearby CpGs under specified dynamics; they do not learn the empirical cross-person matrix
+  from foundation-model sequence features.
+- **Age models with observed graphs.** RelAge-GNN and related graph models use observed
+  co-methylation, genomic proximity, gene membership, and individual methylation to predict an
+  individual's age. The prediction unit and direction are different.
+- **Multimodal methylation-profile prediction.** MethylProphet predicts methylation profiles from
+  sequence and expression. It does not target cross-person locus covariance.
 
-The closest work found is the May 2026 preprint
-[*Bridging Sequence and Graph Structure for Epigenetic Age Prediction*](https://arxiv.org/abs/2605.10541).
-It combines eight hand-crafted sequence features (and a CNN ablation) with a graph whose edges are
-constructed from observed co-methylation, genomic proximity, and gene membership, then predicts
-individual age from individual methylation values. It does **not** predict held-out locus-locus
-correlations from sequence alone. Its finding that hand-crafted sequence features outperform its
-CNN makes the proposed CpG-density/GC baseline especially important.
+## Closest 2026 preprint
+
+[*Bridging Sequence and Graph Structure for Epigenetic Age
+Prediction*](https://arxiv.org/abs/2605.10541) combines eight sequence statistics with a graph
+whose edges include observed co-methylation, genomic proximity, and gene membership, then predicts
+individual age from individual methylation. It does not predict held-out locus-locus correlations
+from sequence alone. Its report that hand-crafted sequence statistics can be competitive makes
+the registered CpG-density/GC baseline especially important.
+
+RelAge-GNN
+([arXiv:2605.07175](https://arxiv.org/abs/2605.07175)) is another close age/graph neighbor, but its
+graphs are inputs built from observed methylation and annotations rather than sequence-predicted
+covariance.
 
 ## Key neighboring references
 
-- Gunasekara et al. (2023), [*A first-generation genome-wide map of correlated DNA
-  methylation*](https://doi.org/10.1101/gr.276547.122).
-- Angermueller et al. (2017), [*DeepCpG: accurate prediction of single-cell DNA methylation states
-  using deep learning*](https://doi.org/10.1186/s13059-017-1189-z).
-- Li et al. (2020), [*PretiMeth: precise prediction models for DNA methylation based on single
-  methylation mark*](https://doi.org/10.1186/s12859-020-3500-6).
-- Affinito et al. (2020), [*Nucleotide distance influences co-methylation between nearby CpG
-  sites*](https://doi.org/10.1016/j.ygeno.2018.05.007).
-- Li et al. (2026), [*Bridging Sequence and Graph Structure for Epigenetic Age
-  Prediction*](https://arxiv.org/abs/2605.10541).
-- Schiff et al. (2024), [*Caduceus: Bi-Directional Equivariant Long-Range DNA Sequence
-  Modeling*](https://arxiv.org/abs/2403.03234).
+- Gunasekara et al. (2023), [a genome-wide map of correlated DNA
+  methylation](https://doi.org/10.1101/gr.276547.122).
+- Gomez et al. (2019), [coMethDMR](https://academic.oup.com/nar/article/47/17/e98/5530673).
+- Angermueller et al. (2017), [DeepCpG](https://doi.org/10.1186/s13059-017-1189-z).
+- Zhang et al. (2015), [sequence-based methylation-state
+  prediction](https://pubmed.ncbi.nlm.nih.gov/25616342/).
+- Affinito et al. (2020), [distance and nearby CpG
+  co-methylation](https://doi.org/10.1016/j.ygeno.2018.05.007).
+- Lövkvist et al. (2022), [mean-field neighboring-site
+  covariance](https://pubmed.ncbi.nlm.nih.gov/35078341/).
+- MethylProphet (2025/2026), [profile prediction from sequence and
+  expression](https://pmc.ncbi.nlm.nih.gov/articles/PMC11839017/).
+- Schiff et al. (2024), [Caduceus](https://arxiv.org/abs/2403.03234).
 
-## Novelty statement to use cautiously
+## Cautious novelty statement
 
-The working delta is: **out-of-locus prediction of an empirical population co-methylation geometry
-and age-association vector from frozen reference-sequence embeddings, evaluated on sequence-buffered
-held-out loci.** Re-run the search immediately before a paper or public novelty claim.
+The working delta is: **out-of-locus prediction of empirical population co-methylation geometry
+and age-association from frozen reference-sequence embeddings, evaluated on sequence-buffered
+held-out loci.**
+
+Repeat the search immediately before any paper submission or unqualified novelty claim.

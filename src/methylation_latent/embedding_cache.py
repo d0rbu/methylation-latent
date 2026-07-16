@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,11 +31,13 @@ from methylation_latent.storage import (
     save_embedding_matrix,
 )
 
-_SHARD_SCHEMA = "methylation-latent.caduceus-embedding-shard.v1"
-_MANIFEST_SCHEMA = "methylation-latent.caduceus-embedding-cache.v1"
+_SHARD_SCHEMA = "methylation-latent.caduceus-embedding-shard.v2"
+_MANIFEST_SCHEMA = "methylation-latent.caduceus-embedding-cache.v2"
 _SHARD_PAYLOAD = "embeddings.safetensors"
 _SHARD_METADATA = "metadata.json"
 _CACHE_MANIFEST = "manifest.json"
+_SHA256 = re.compile(r"^[0-9a-f]{64}$", flags=re.ASCII)
+_GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$", flags=re.ASCII)
 
 
 def _probe_order_sha256(probes: NonEmptyProbeSet) -> str:
@@ -43,6 +46,7 @@ def _probe_order_sha256(probes: NonEmptyProbeSet) -> str:
 
 @dataclass(frozen=True, slots=True)
 class EmbeddingShardIdentity:
+    git_commit: str
     window_size: int
     start: int
     stop: int
@@ -50,11 +54,16 @@ class EmbeddingShardIdentity:
     payload_sha256: str
 
     def __post_init__(self) -> None:
+        if _GIT_COMMIT.fullmatch(self.git_commit) is None:
+            raise ValueError("embedding shard Git commit must be 40 lowercase hex characters")
         if self.window_size <= 0 or self.window_size % 2 != 0:
             raise ValueError("embedding shard window must be positive and even")
         if self.start < 0 or self.stop <= self.start:
             raise ValueError("embedding shard range must be non-empty and increasing")
-        if len(self.probe_order_sha256) != 64 or len(self.payload_sha256) != 64:
+        if (
+            _SHA256.fullmatch(self.probe_order_sha256) is None
+            or _SHA256.fullmatch(self.payload_sha256) is None
+        ):
             raise ValueError("embedding shard fingerprints must be SHA-256 values")
 
     @property
@@ -80,6 +89,7 @@ def _metadata_json(identity: EmbeddingShardIdentity) -> dict[str, JsonValue]:
         "repository": CADUCEUS_REPOSITORY,
         "revision": CADUCEUS_REVISION,
         "checkpoint_sha256": CADUCEUS_CHECKPOINT_SHA256,
+        "git_commit": identity.git_commit,
         "window_size": identity.window_size,
         "start": identity.start,
         "stop": identity.stop,
@@ -97,6 +107,7 @@ def save_embedding_shard_exclusive(
     embeddings: EmbeddingMatrix,
     probes: NonEmptyProbeSet,
     *,
+    git_commit: str,
     window_size: WindowSize,
     start: int,
     stop: int,
@@ -115,6 +126,7 @@ def save_embedding_shard_exclusive(
     payload = temporary / _SHARD_PAYLOAD
     save_embedding_matrix(payload, embeddings)
     identity = EmbeddingShardIdentity(
+        git_commit=git_commit,
         window_size=int(window_size),
         start=start,
         stop=stop,
@@ -136,6 +148,7 @@ def _load_shard_metadata(path: Path) -> EmbeddingShardIdentity:
         "repository",
         "revision",
         "checkpoint_sha256",
+        "git_commit",
         "window_size",
         "start",
         "stop",
@@ -168,6 +181,7 @@ def _load_shard_metadata(path: Path) -> EmbeddingShardIdentity:
     if fixed_identity != expected_identity:
         raise ValueError("embedding shard model, schema, or tensor identity differs")
     return EmbeddingShardIdentity(
+        git_commit=str(raw["git_commit"]),
         window_size=int(raw["window_size"]),
         start=int(raw["start"]),
         stop=int(raw["stop"]),
@@ -184,11 +198,14 @@ def load_embedding_shard(
     window_size: WindowSize,
     start: int,
     stop: int,
+    expected_git_commit: str | None = None,
 ) -> tuple[EmbeddingShardIdentity, EmbeddingMatrix]:
     observed_names = {path.name for path in shard_directory.iterdir()}
     if observed_names != {_SHARD_PAYLOAD, _SHARD_METADATA}:
         raise ValueError("embedding shard file inventory differs")
     identity = _load_shard_metadata(shard_directory / _SHARD_METADATA)
+    if expected_git_commit is not None and identity.git_commit != expected_git_commit:
+        raise ValueError("embedding shard Git commit differs")
     if (
         identity.window_size != int(window_size)
         or identity.start != start
@@ -215,9 +232,12 @@ def finalize_embedding_cache_exclusive(
     cache_directory: Path,
     probes: NonEmptyProbeSet,
     *,
+    git_commit: str,
     window_size: WindowSize,
     shard_size: int,
 ) -> None:
+    if _GIT_COMMIT.fullmatch(git_commit) is None:
+        raise ValueError("embedding cache Git commit must be 40 lowercase hex characters")
     ranges = embedding_shard_ranges(len(probes), shard_size)
     identities = tuple(
         load_embedding_shard(
@@ -226,6 +246,7 @@ def finalize_embedding_cache_exclusive(
             window_size=window_size,
             start=start,
             stop=stop,
+            expected_git_commit=git_commit,
         )[0]
         for start, stop in ranges
     )
@@ -246,6 +267,7 @@ def finalize_embedding_cache_exclusive(
             "repository": CADUCEUS_REPOSITORY,
             "revision": CADUCEUS_REVISION,
             "checkpoint_sha256": CADUCEUS_CHECKPOINT_SHA256,
+            "git_commit": git_commit,
             "window_size": int(window_size),
             "probe_count": len(probes),
             "probe_order_sha256": _probe_order_sha256(probes),
@@ -253,6 +275,7 @@ def finalize_embedding_cache_exclusive(
             "shards": [
                 {
                     "directory": identity.directory_name,
+                    "git_commit": identity.git_commit,
                     "start": identity.start,
                     "stop": identity.stop,
                     "probe_order_sha256": identity.probe_order_sha256,
@@ -270,6 +293,7 @@ def load_embedding_cache(
     probes: NonEmptyProbeSet,
     *,
     window_size: WindowSize,
+    expected_git_commit: str | None = None,
 ) -> EmbeddingMatrix:
     manifest_path = cache_directory / _CACHE_MANIFEST
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -278,6 +302,7 @@ def load_embedding_cache(
         "repository",
         "revision",
         "checkpoint_sha256",
+        "git_commit",
         "window_size",
         "probe_count",
         "probe_order_sha256",
@@ -286,6 +311,11 @@ def load_embedding_cache(
     }
     if not isinstance(raw, dict) or set(raw) != expected:
         raise ValueError("embedding-cache manifest envelope differs")
+    git_commit = raw["git_commit"]
+    if not isinstance(git_commit, str) or _GIT_COMMIT.fullmatch(git_commit) is None:
+        raise ValueError("embedding-cache manifest Git commit is invalid")
+    if expected_git_commit is not None and git_commit != expected_git_commit:
+        raise ValueError("embedding-cache manifest Git commit differs")
     identity = (
         raw["schema"],
         raw["repository"],
@@ -318,6 +348,7 @@ def load_embedding_cache(
         shard_record = cast(dict[str, object], raw_shard)
         expected_record = {
             "directory",
+            "git_commit",
             "start",
             "stop",
             "probe_order_sha256",
@@ -334,12 +365,14 @@ def load_embedding_cache(
             stop=stop,
         )
         manifest_record = (
+            shard_record["git_commit"],
             shard_record["start"],
             shard_record["stop"],
             shard_record["probe_order_sha256"],
             shard_record["payload_sha256"],
         )
         observed_record = (
+            shard_identity.git_commit,
             shard_identity.start,
             shard_identity.stop,
             shard_identity.probe_order_sha256,
@@ -347,6 +380,8 @@ def load_embedding_cache(
         )
         if manifest_record != observed_record:
             raise ValueError("embedding-cache shard record differs from its verified directory")
+        if shard_identity.git_commit != git_commit:
+            raise ValueError("embedding-cache shard Git commit differs from its manifest")
         tensors.append(embeddings.tensor)
     concatenated = t.cat(tensors, dim=0)
     if concatenated.shape != (len(probes), 256):

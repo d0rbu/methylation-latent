@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch as t
 
+from methylation_latent.artifacts import require_clean_git_commit
 from methylation_latent.cohort import load_probe_table
 from methylation_latent.domain import parse_window_size
 from methylation_latent.embedding_cache import (
@@ -41,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     arguments = _parser().parse_args()
+    git_commit = require_clean_git_commit(Path(__file__).resolve().parents[2])
     probes = load_probe_table(arguments.probes)
     window = parse_window_size(arguments.window_size)
     ranges = embedding_shard_ranges(len(probes), arguments.shard_size)
@@ -50,6 +52,7 @@ def main() -> None:
             arguments.output,
             probes,
             window_size=window,
+            expected_git_commit=git_commit,
         )
         print(
             f"verified_complete window={int(window)} probes={loaded.tensor.shape[0]} "
@@ -67,6 +70,7 @@ def main() -> None:
                 window_size=window,
                 start=start,
                 stop=stop,
+                expected_git_commit=git_commit,
             )
             print(f"verified_existing window={int(window)} start={start} stop={stop}")
         else:
@@ -103,6 +107,7 @@ def main() -> None:
                     arguments.output,
                     embeddings,
                     probes,
+                    git_commit=git_commit,
                     window_size=window,
                     start=start,
                     stop=stop,
@@ -111,6 +116,7 @@ def main() -> None:
     finalize_embedding_cache_exclusive(
         arguments.output,
         probes,
+        git_commit=git_commit,
         window_size=window,
         shard_size=arguments.shard_size,
     )
@@ -118,6 +124,7 @@ def main() -> None:
         arguments.output,
         probes,
         window_size=window,
+        expected_git_commit=git_commit,
     )
     print(f"finalized window={int(window)} probes={verified.tensor.shape[0]} shards={len(ranges)}")
 

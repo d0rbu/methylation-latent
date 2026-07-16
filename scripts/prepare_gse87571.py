@@ -13,6 +13,7 @@ from beartype import beartype
 
 from methylation_latent.artifacts import (
     JsonValue,
+    require_clean_git_commit,
     sha256_file,
     sha256_ordered_strings,
     write_canonical_json_exclusive,
@@ -490,6 +491,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     arguments = _parser().parse_args()
+    require_clean_git_commit(Path(__file__).resolve().parents[1])
     config = load_protocol_config(arguments.config)
     summary = build_primary_data_artifacts(
         config,

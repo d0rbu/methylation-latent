@@ -1,109 +1,64 @@
 # Configuration
 
-Tool configuration lives in `pyproject.toml`. Scientific choices and external identities live in
-the strict, versioned `configs/protocol-v1.toml`; unknown fields are errors.
+Tooling lives in `pyproject.toml`; scientific choices and external identities live in
+`configs/protocol-v2.toml`. The protocol schema is strict and unknown fields are errors.
 
-## Package Management
-
-Use `uv`.
+## Python tooling
 
 ```bash
-uv sync
-uv add torch
-uv add --dev pytest
-```
-
-NumPy is deliberately not a project dependency. Project code and tests use PyTorch as
-`import torch as t`.
-
-## Linting
-
-`ruff` is configured for Python 3.13 with common correctness-oriented rule families:
-
-- `E`, `F`, `W`
-- `I`
-- `UP`
-- `B`
-- `C4`
-- `SIM`
-- `RET`
-
-Run:
-
-```bash
+uv sync --locked
 uv run ruff check .
-```
-
-## Pre-Commit
-
-`pre-commit` uses local hooks that invoke the locked `uv` environment.
-
-Install:
-
-```bash
-uv run pre-commit install
-```
-
-Run:
-
-```bash
+uv run ty check src tests scripts
+uv run pytest
 uv run pre-commit run --all-files
 ```
 
-Configured hooks:
+Python 3.13 owns parsing, targets, splitting, training, evaluation, and site compilation.
+`environments/caduceus` pins the Python 3.11 native stack. `environments/methylprep` exists only
+for parity reproduction. `environments/sesame` pins the primary R container and lock.
 
-- `uv lock --check`
-- `uv run ruff check .`
-- `uv run ty check`
-- `uv run pytest`
+Project code uses Torch as:
 
-The two isolated legacy/native runtimes are locked independently:
-
-```bash
-uv lock --project environments/methylprep --check
-uv lock --project environments/caduceus --check
+```python
+import torch as t
 ```
 
-## Type Checking
+NumPy is not a direct dependency.
 
-`ty` is configured for Python 3.13.
+## Protocol v2 sections
 
-Run:
+`data` pins GSE87571 source bytes, raw inventory/order, phenotype sources, manifest, build, and
+reference archive.
 
-```bash
-uv run ty check
-```
+`reference_audit` pins exhaustive coordinate/window counts and the common ordered-locus
+fingerprint.
 
-## Testing
+`qc` pins pOOBAH/sample thresholds, seSAMe container and package identities, and the failed
+methylprep parity record.
 
-`pytest` collects from `tests/`, runs with strict config and strict markers, and reports branch
-coverage for `methylation_latent`. The suite fails below 95%.
+`masks` pins immutable Chen/Zhou URLs and bytes.
 
-Run:
+`model` pins Caduceus repository, revision, checkpoint, width, precision, shard size, and the four
+window-specific batch sizes.
 
-```bash
-uv run pytest
-```
+`splits` pins the window grid, block width, context anchors, chromosome 7, and primary/validation
+seeds.
 
-Markers:
+`targets` pins the deterministic correlation audit.
 
-- `property`: property-based tests powered by Hypothesis
-- `slow`: useful but expensive tests excluded from ad hoc focused runs
+`training` pins:
 
-## Frozen protocol
+- batch size 512 and 1,048,576-base neighborhood;
+- Adam, learning rate 0.001, and weight decay 0;
+- 2,000 tuning steps and validation every 100;
+- validation pair chunking and training seed;
+- separate age/full checkpoint rules and complete-train refit.
 
-`configs/protocol-v1.toml` pins:
+`sweep` pins dimensions `{16,32,64,128,256}`, lambdas `{0.1,1,10}`, evaluation pair caps/seeds,
+and 16,384-base projection window.
 
-- GSE40279/GPL13534/sample-key bytes and the ordered-sample fingerprint;
-- hg19 reference archive identity;
-- exhaustive hg19 coordinate/window counts and eligible probe-order fingerprint;
-- detection/sample QC and the conditional methylprep processor;
-- exact Chen and Zhou list URLs and hashes;
-- Caduceus repository, revision, checkpoint hash, and width;
-- window, split, latent-dimension, lambda, pair-cap, and seed grids.
+## Scientific changes
 
-The committed status is `draft` because authentic IDAT provenance and the seSAMe parity gate are
-not available, and because training/batching/checkpoint-selection fields remain to be reviewed and
-added. The exact resolved R dependency lock for the pinned seSAMe reference also remains to be
-generated on an R 4.6 host. Setting the protocol to `frozen` is a scientific action, not a way to
-bypass any blocker.
+The protocol status is `frozen`. Do not edit v2 in place after evaluation begins. A changed source,
+threshold, split, seed, grid, optimizer, selection score, feature map, or metric requires a new
+protocol ID and artifact root.

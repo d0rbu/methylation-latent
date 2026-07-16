@@ -29,14 +29,16 @@ h2 { font: 650 1.45rem/1.2 ui-serif, Georgia, serif; }
 .badge { border: 1px solid currentColor; border-radius: 999px; padding: .2rem .65rem; color: var(--warning); font-size: .82rem; font-weight: 750; }
 main { display: grid; gap: 1.2rem; padding-bottom: 4rem; }
 section { border: 1px solid var(--line); border-radius: 14px; padding: 1.2rem; background: var(--card); }
-.panel { min-height: 220px; display: grid; place-items: center; overflow-x: auto; }
-.panel article { width: 100%; }
+.panel { min-height: 220px; display: grid; gap: 1.5rem; place-items: center; overflow-x: auto; }
+.panel article { display: grid; gap: .5rem; width: 100%; }
 .empty { color: var(--muted); max-width: 50ch; text-align: center; }
-svg { width: 100%; min-width: 620px; height: 300px; }
-.axis { stroke: var(--line); }
+svg { width: 100%; min-width: 720px; height: 340px; }
+.axis { stroke: #7e8983; stroke-width: 1.2; }
+.grid { stroke: var(--line); stroke-width: .7; }
 .label { fill: var(--muted); font-size: 11px; }
+.axis-title { fill: var(--muted); font-size: 12px; font-weight: 650; }
 .legend { display: flex; flex-wrap: wrap; gap: .8rem; color: var(--muted); font-size: .86rem; }
-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+table { border-collapse: collapse; width: 100%; min-width: 690px; font-size: .88rem; font-variant-numeric: tabular-nums; }
 th, td { padding: .5rem; border-bottom: 1px solid var(--line); text-align: right; }
 th:first-child, td:first-child { text-align: left; }
 code { overflow-wrap: anywhere; }

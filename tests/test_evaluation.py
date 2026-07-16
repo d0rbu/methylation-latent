@@ -306,6 +306,7 @@ def test_evaluation_pair_cache_round_trips_fixed_pairs_and_targets(
             EvaluationPairCacheIdentity(
                 protocol_id="test",
                 protocol_sha256="a" * 64,
+                git_commit="f" * 40,
                 data_sha256="b" * 64,
                 target_sha256="c" * 64,
                 split_name="split",
@@ -318,6 +319,18 @@ def test_evaluation_pair_cache_round_trips_fixed_pairs_and_targets(
         EvaluationPairCacheIdentity(
             protocol_id="test",
             protocol_sha256="bad",
+            git_commit="f" * 40,
+            data_sha256="b" * 64,
+            target_sha256="c" * 64,
+            split_name="split",
+            split_sha256="d" * 64,
+            probe_order_sha256="e" * 64,
+        )
+    with pytest.raises(ValueError, match="Git commit"):
+        EvaluationPairCacheIdentity(
+            protocol_id="test",
+            protocol_sha256="a" * 64,
+            git_commit="bad",
             data_sha256="b" * 64,
             target_sha256="c" * 64,
             split_name="split",
@@ -327,6 +340,7 @@ def test_evaluation_pair_cache_round_trips_fixed_pairs_and_targets(
     identity = EvaluationPairCacheIdentity(
         protocol_id="test-protocol",
         protocol_sha256="a" * 64,
+        git_commit="f" * 40,
         data_sha256="b" * 64,
         target_sha256="c" * 64,
         split_name="test-split",
@@ -349,6 +363,7 @@ def test_evaluation_pair_cache_round_trips_fixed_pairs_and_targets(
             EvaluationPairCacheIdentity(
                 protocol_id="other-protocol",
                 protocol_sha256="a" * 64,
+                git_commit="f" * 40,
                 data_sha256="b" * 64,
                 target_sha256="c" * 64,
                 split_name="test-split",

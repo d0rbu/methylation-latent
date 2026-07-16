@@ -1,85 +1,134 @@
-# Getting Started
+# Getting started
 
-## Prerequisites
+## Environments
 
-- Python 3.13
-- `uv`
-
-Install `uv` if needed:
+The typed analysis environment uses Python 3.13:
 
 ```bash
-command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-## Setup
-
-```bash
-uv sync
+uv sync --locked
 uv run pre-commit install
-uv run pytest
-```
-
-The default Python 3.13 environment owns typed parsing, target construction, splitting, training,
-evaluation, and the static site. Raw-IDAT preprocessing and Caduceus native kernels have separate
-lockfiles. The Caduceus environment pins Python 3.11 but imports the same embedding implementation
-from `src/`; it is not a duplicate adapter:
-
-```bash
-uv sync --project environments/methylprep --locked
-uv sync --project environments/caduceus --locked
-```
-
-Invoke that shared implementation with `PYTHONPATH=src` under the isolated environment. For
-example, the integration smoke in the embedding pipeline document uses this exact path.
-
-Do not use either isolated environment until its documented platform prerequisites are satisfied.
-In particular, the reviewed Caduceus stack requires a compatible NVIDIA/CUDA build.
-
-## Daily Commands
-
-```bash
-uv run ruff check .
-uv run ty check
-uv run pytest
 uv run pre-commit run --all-files
 ```
 
-Use `uv add <package>` for runtime dependencies and `uv add --dev <package>` for
-development-only tooling.
-
-## Confirm the protocol and public inputs
+The pinned Caduceus native stack uses Python 3.11:
 
 ```bash
-uv run methylation-latent check-config --config configs/protocol-v1.toml
-
-uv run methylation-latent audit-public-inputs \
-  --config configs/protocol-v1.toml \
-  --manifest /data/GPL13534_HumanMethylation450_15017482_v.1.1.csv.gz \
-  --series-matrix /data/GSE40279_series_matrix.txt.gz \
-  --sample-key /data/GSE40279_sample_key.txt.gz
-
-uv run methylation-latent audit-exclusion-lists \
-  --config configs/protocol-v1.toml \
-  --manifest /data/GPL13534_HumanMethylation450_15017482_v.1.1.csv.gz \
-  --chen /data/48639-non-specific-probes-Illumina450k.csv \
-  --zhou /data/hm450.hg19.manifest.tsv.gz
+uv sync --project environments/caduceus --locked
 ```
 
-These commands validate only the named public files. They do not satisfy the raw-IDAT gate.
+`environments/methylprep` is retained only to reproduce the parity audit. It is not the primary
+processor. Primary raw-IDAT preprocessing uses the pinned seSAMe container described in
+[`../pipelines/data-preprocessing.md`](../pipelines/data-preprocessing.md).
 
-After decompressing and indexing the byte-pinned UCSC reference, exhaustively audit every retained
-manifest coordinate and 64 kb window:
+## Verify the frozen protocol
 
 ```bash
-uv run methylation-latent audit-reference \
-  --config configs/protocol-v1.toml \
-  --manifest /data/GPL13534_HumanMethylation450_15017482_v.1.1.csv.gz \
-  --chen /data/48639-non-specific-probes-Illumina450k.csv \
-  --zhou /data/hm450.hg19.manifest.tsv.gz \
-  --reference-archive /data/hg19.fa.gz \
-  --fasta /data/hg19.fa \
-  --fasta-index /data/hg19.fa.fai
+uv run methylation-latent check-config --config configs/protocol-v2.toml
 ```
 
-The command checks archive MD5, exact decompressed bytes, all one-based plus-strand CpG
-coordinates, maximum-window boundaries/alphabet, and the final eligible probe-order hash.
+Unknown fields, source drift, an unfrozen status, illegal dimensions, or nonzero weight decay are
+errors.
+
+## Artifact root
+
+Keep sources and large artifacts outside Git:
+
+```bash
+export PROJECT="$PWD"
+export DATA_ROOT=/absolute/path/to/methylation-latent-data
+export RUN_ROOT="$DATA_ROOT/artifacts/gse87571-hg19-caduceus-ps-v2"
+export DATA="$RUN_ROOT/data"
+export EMBEDDINGS="$RUN_ROOT/embeddings"
+export EXPERIMENTS="$RUN_ROOT/experiments"
+```
+
+The repository never downloads a differently versioned source as a fallback. Populate
+`$DATA_ROOT/sources` and preprocessing directories with the exact files named by
+`configs/protocol-v2.toml`.
+
+## Build and seal primary data
+
+```bash
+uv run python scripts/prepare_gse87571.py \
+  --config configs/protocol-v2.toml \
+  --series-matrix "$DATA_ROOT/sources/GSE87571_series_matrix.txt.gz" \
+  --manifest "$DATA_ROOT/sources/GPL13534_HumanMethylation450_15017482_v.1.1.csv.gz" \
+  --chen "$DATA_ROOT/sources/48639-non-specific-probes-Illumina450k.csv" \
+  --zhou "$DATA_ROOT/sources/hm450.hg19.manifest.tsv.gz" \
+  --reference-archive "$DATA_ROOT/sources/hg19.fa.gz" \
+  --fasta "$DATA_ROOT/sources/hg19.fa" \
+  --fasta-index "$DATA_ROOT/sources/hg19.fa.fai" \
+  --raw-inventory "$DATA_ROOT/preprocessing/raw-inventory.json" \
+  --parity-audit "$DATA_ROOT/preprocessing/parity/audit.json" \
+  --additional-characteristics "$DATA_ROOT/sources/GSE87571_additional_sample_characteristics.xlsx" \
+  --filelist "$DATA_ROOT/sources/GSE87571_filelist.txt" \
+  --sesame-p001 "$DATA_ROOT/preprocessing/full/sesame-output-p001" \
+  --sesame-p005 "$DATA_ROOT/preprocessing/full/sesame-output-p005" \
+  --output "$DATA"
+
+uv run python scripts/seal_primary_data.py \
+  --config configs/protocol-v2.toml \
+  --data "$DATA"
+```
+
+The sealer recomputes target and split invariants before writing `bundle.json`. It refuses an
+existing bundle or any unrecognized file. Run it, the embedding entry point, the experiment
+runner, and the site compiler only from a committed clean worktree: each command fails loudly on
+tracked or untracked changes and records the exact producer commit.
+
+## Freeze baseline and pair artifacts
+
+```bash
+uv run python scripts/run_experiments.py \
+  --stage sequence --config configs/protocol-v2.toml \
+  --data "$DATA" --embeddings "$EMBEDDINGS" \
+  --output "$EXPERIMENTS" --device cuda
+
+uv run python scripts/run_experiments.py \
+  --stage pairs --config configs/protocol-v2.toml \
+  --data "$DATA" --embeddings "$EMBEDDINGS" \
+  --output "$EXPERIMENTS" --device cuda
+```
+
+## Precompute embeddings
+
+Run the four commands sequentially. The protocol-pinned batch sizes correspond to increasing
+window widths:
+
+```bash
+while read -r window batch; do
+  PYTHONPATH=src environments/caduceus/.venv/bin/python \
+    environments/caduceus/embed.py \
+    --probes "$DATA/probes.tsv" \
+    --fasta "$DATA_ROOT/sources/hg19.fa" \
+    --model-cache "$HOME/.cache/huggingface/hub" \
+    --output "$EMBEDDINGS/window-$window" \
+    --window-size "$window" --batch-size "$batch" \
+    --shard-size 1024 --device cuda
+done <<'WINDOWS'
+1024 512
+4096 128
+16384 32
+65536 8
+WINDOWS
+```
+
+Each command verifies existing shards and fills only missing ranges. A finalized manifest is
+reloaded and hashed before the command exits.
+
+## Train and evaluate
+
+```bash
+for stage in age full evaluate; do
+  uv run python scripts/run_experiments.py \
+    --stage "$stage" --config configs/protocol-v2.toml \
+    --data "$DATA" --embeddings "$EMBEDDINGS" \
+    --output "$EXPERIMENTS" --device cuda
+done
+```
+
+Do not use `--stage all` to bypass observation of the ordered baseline gates. It is available for
+clean automated reproduction only after all prerequisites and GPU capacity are confirmed.
+
+Site compilation is documented in
+[`../operations/results-site.md`](../operations/results-site.md).

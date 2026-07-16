@@ -22,6 +22,7 @@ def test_primary_data_bundle_rejects_any_post_seal_change(tmp_path: Path) -> Non
         tmp_path,
         protocol_id="protocol",
         protocol_sha256="a" * 64,
+        git_commit="f" * 40,
         retained_probes=3,
         retained_samples=4,
     )
@@ -37,6 +38,7 @@ def test_primary_data_bundle_rejects_any_post_seal_change(tmp_path: Path) -> Non
             tmp_path,
             protocol_id="protocol",
             protocol_sha256="a" * 64,
+            git_commit="f" * 40,
             retained_probes=3,
             retained_samples=4,
         )
@@ -56,6 +58,7 @@ def test_data_bundle_domain_types_reject_unsafe_or_incomplete_records() -> None:
         PrimaryDataBundle(
             protocol_id="protocol",
             protocol_sha256="a" * 64,
+            git_commit="f" * 40,
             retained_probes=2,
             retained_samples=3,
             files=(
@@ -68,11 +71,20 @@ def test_data_bundle_domain_types_reject_unsafe_or_incomplete_records() -> None:
     with pytest.raises(ValueError, match="SHA-256"):
         BundledFile("x", 1, "not-a-hash")
     with pytest.raises(ValueError, match="protocol ID"):
-        PrimaryDataBundle("", "a" * 64, 2, 3, (BundledFile("x", 1, "b" * 64),))
+        PrimaryDataBundle("", "a" * 64, "f" * 40, 2, 3, (BundledFile("x", 1, "b" * 64),))
+    with pytest.raises(ValueError, match="Git commit"):
+        PrimaryDataBundle("p", "a" * 64, "bad", 2, 3, (BundledFile("x", 1, "b" * 64),))
     with pytest.raises(ValueError, match="dimensions"):
-        PrimaryDataBundle("p", "a" * 64, 0, 1, (BundledFile("x", 1, "b" * 64),))
+        PrimaryDataBundle(
+            "p",
+            "a" * 64,
+            "f" * 40,
+            0,
+            1,
+            (BundledFile("x", 1, "b" * 64),),
+        )
     with pytest.raises(ValueError, match="sorted"):
-        PrimaryDataBundle("p", "a" * 64, 2, 3, ())
+        PrimaryDataBundle("p", "a" * 64, "f" * 40, 2, 3, ())
 
 
 def _sealed_directory(path: Path) -> Path:
@@ -82,6 +94,7 @@ def _sealed_directory(path: Path) -> Path:
         path,
         protocol_id="protocol",
         protocol_sha256="a" * 64,
+        git_commit="f" * 40,
         retained_probes=2,
         retained_samples=3,
     )
@@ -94,6 +107,7 @@ def test_data_bundle_rejects_missing_added_and_unsealable_directories(tmp_path: 
             tmp_path / "missing",
             protocol_id="protocol",
             protocol_sha256="a" * 64,
+            git_commit="f" * 40,
             retained_probes=2,
             retained_samples=3,
         )

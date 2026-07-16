@@ -1,4 +1,4 @@
-"""Strict GSE40279 sample metadata parsing and IDAT identity audits."""
+"""Strict GEO sample metadata parsing and IDAT identity audits."""
 
 from __future__ import annotations
 
