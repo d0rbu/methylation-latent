@@ -16,6 +16,31 @@
 4. Return typed values, dataclasses, or explicit result objects.
 5. Cover invariants with unit tests and property tests.
 
+## Add or replace an external source
+
+1. Add the immutable URL/revision and cryptographic hash to the protocol configuration.
+2. Parse the source with an exact schema and count contract.
+3. Preserve the original source name and overlapping exclusion reasons in the ledger.
+4. Add malformed-schema, duplicate-ID, hash, and count tests.
+5. Changing reviewed source bytes requires a new protocol ID.
+
+## Run an experiment stage
+
+1. Verify the protocol is frozen; committed v1 remains `draft` while IDATs and the reviewed
+   optimization/checkpoint schedule are absent.
+2. Verify every upstream payload against its adjacent metadata.
+3. Confirm data/split/window/probe-order fingerprints match exactly.
+4. Run stages in the order in `docs/pipelines/experiment-lifecycle.md`.
+5. Publish the new payload and canonical metadata exclusively; never overwrite an artifact.
+6. Register full-model results only after both matching baselines exist.
+
+## Change split logic
+
+1. Keep the API limited to locus metadata and Torch RNG state.
+2. Add a brute-force interval oracle for the changed behavior.
+3. Test the maximum buffer and each individual primary window.
+4. Regenerate split artifacts under a new identity; old results remain attached to the old split.
+
 ## Before Handoff
 
 ```bash

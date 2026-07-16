@@ -1,60 +1,65 @@
-# AGENTS.md - research-project-template
+# AGENTS.md - methylation-latent
 
-You are working in a correctness-first Python research template. The repo should stay
-small, explicit, and easy to reuse as the base for new research projects.
+This is a correctness-first research repository. A plausible result produced by a leaked or
+misregistered pipeline is worse than a crash.
 
-This file is the AI-agent entry point. It should point to docs that contain durable
-project knowledge. If you want to add detail here, usually update the linked doc instead.
+## Read before changing code
 
-## Read these first
+- [`README.md`](README.md)
+- [`docs/README.md`](docs/README.md)
+- [`docs/research/protocol.md`](docs/research/protocol.md)
+- [`docs/development/correctness.md`](docs/development/correctness.md)
+- [`docs/pipelines/experiment-lifecycle.md`](docs/pipelines/experiment-lifecycle.md)
+- [`docs/pipelines/data-preprocessing.md`](docs/pipelines/data-preprocessing.md)
+- [`docs/pipelines/splits.md`](docs/pipelines/splits.md)
+- [`docs/reference/architecture.md`](docs/reference/architecture.md)
+- [`docs/reference/artifacts.md`](docs/reference/artifacts.md)
 
-- [`README.md`](README.md) - project pitch and quickstart
-- [`docs/README.md`](docs/README.md) - documentation map
-- [`docs/onboarding/getting-started.md`](docs/onboarding/getting-started.md) - local setup
-- [`docs/onboarding/workflows.md`](docs/onboarding/workflows.md) - common development flows
-- [`docs/development/correctness.md`](docs/development/correctness.md) - correctness philosophy and tools
-- [`docs/reference/architecture.md`](docs/reference/architecture.md) - package architecture
-- [`docs/reference/configuration.md`](docs/reference/configuration.md) - tool configuration
-- [`docs/reference/file-reference.md`](docs/reference/file-reference.md) - file-by-file reference
+## Non-negotiable conventions
 
-## Repo layout
+- Use `uv` and invoke project tools with `uv run`.
+- Use PyTorch as `import torch as t`. Do not import NumPy in project code or tests.
+- Use `jaxtyping` for tensor shapes/dtypes, `beartype` at untrusted boundaries, and
+  `phantom-types` for scalar domain invariants.
+- Represent semantic tensor invariants with validated wrappers. A raw tensor is not a
+  `UnitNormRows` or a `CorrelationMatrix` merely because a comment says so.
+- Do not catch an invariant failure and continue. There are no substitute data sources,
+  guessed coordinate conventions, silent clipping, missing-value imputation, or graceful
+  preprocessing fallbacks.
+- Keep configuration groups atomic. If several fields are jointly optional, make a dataclass
+  containing required fields and make that dataclass optional.
+- Keep imports at the top of files. Prefer `functools` and `itertools` when they make control
+  flow shorter without obscuring invariants.
+- Generated data, embeddings, checkpoints, metrics, and sites stay outside Git.
+- Update docs and [`docs/reference/file-reference.md`](docs/reference/file-reference.md) when
+  codepaths or contracts change.
 
-```
-tests/              pytest suite, including property tests
-docs/               source-of-truth documentation
-.github/workflows/  CI checks
-```
+## Scientific guardrails
 
-## Conventions
+- `hg19`/GRCh37 is the only accepted build. GPL13534 `MAPINFO` is a one-based coordinate of
+  the plus-strand CpG cytosine; extraction converts it once to a zero-based half-open interval.
+- Probe strand annotations are retained for audits but never reverse-complement the reference.
+- Raw-IDAT preprocessing and processed-GEO audit artifacts have distinct types and eligibility.
+- Split generation may use only probe ID, chromosome, coordinate, and genomic context. It may
+  not load beta values, `X`, `Y`, `rho`, or embeddings.
+- The maximum configured sequence window defines the common train/test buffer for all window
+  experiments. Every individual window size is also checked explicitly.
+- Never mix seen-by-held-out and held-out-by-held-out pairs. Never pool cis distance bins with
+  trans pairs.
+- A full-model run must point to completed baseline artifacts for the identical data, sequence,
+  and split fingerprints.
+- Caduceus embeddings are frozen, centre-token representations and are computed once per
+  window size. Training must never invoke the sequence model.
+- Optimizers for the latent metric use zero weight decay.
+- Only one profiling benchmark may run at a time, and benchmarks are end-to-end with a recorded
+  baseline.
 
-- Use `uv sync` to install and `uv run ...` to invoke project tools.
-- Run `uv run pre-commit run --all-files` before handoff.
-- The pre-commit hooks enforce `uv lock --check`, `ruff`, `ty`, and `pytest`.
-- Prefer making bad state unrepresentable over documenting invalid states after the fact.
-- Use `phantom-types` for domain invariants that narrow primitive values.
-- Use `beartype` at runtime boundaries where invalid values can enter the system.
-- Use `jaxtyping` for array shape and dtype contracts.
-- Use Hypothesis for invariants, edge cases, and regression tests that should hold over many inputs.
-- Keep imports at the top of each file.
-- Keep docs and code in sync; when behavior changes, update `docs/reference/file-reference.md`.
-
-## Correctness tools
-
-The scaffold tests demonstrate:
-
-- `Probability`: a phantom type for closed-range probabilities.
-- `normalize_weights`: a `jaxtyping` + `beartype` checked NumPy function.
-- property tests that use `st.from_type(...)` with phantom types.
-
-Copy these patterns for project-specific concepts such as dataset splits, feature IDs,
-sample counts, model dimensions, or validated artifact paths.
-
-## Testing
+## Required checks
 
 ```bash
 uv run pre-commit run --all-files
 ```
 
-`pytest` is configured to collect from `tests/` and require 95% coverage on the
-current scaffold tests. Update coverage `source` when the project grows real source
-modules.
+Data-dependent integration gates are documented in
+[`docs/pipelines/experiment-lifecycle.md`](docs/pipelines/experiment-lifecycle.md). A unit-test
+pass does not make an unrun data gate pass.

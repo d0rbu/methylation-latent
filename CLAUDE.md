@@ -1,21 +1,14 @@
-# CLAUDE.md - research-project-template
+# CLAUDE.md - methylation-latent
 
-Follow [`AGENTS.md`](AGENTS.md) first. It is the source of truth for agent behavior in
-this repository.
+Follow [`AGENTS.md`](AGENTS.md). It is the source of truth for agent behavior.
 
-## Working style
+Read the research protocol, correctness contract, preprocessing decision, and split protocol
+before editing implementation. Do not weaken a fail-loud boundary to make incomplete data run.
 
-- Read the relevant docs before changing code.
-- Keep changes tightly scoped to the requested behavior.
-- Prefer small, typed, tested functions over large scripts.
-- Use phantom types and runtime validation to make invalid states hard to represent.
-- Add or update property tests when changing invariants.
-- Update docs when file purpose, commands, configuration, or workflow changes.
-
-## Required checks
+Run the full local gate before handoff:
 
 ```bash
 uv run pre-commit run --all-files
 ```
 
-If a check cannot be run, say exactly why and what remains unverified.
+Report data-dependent gates separately from unit and property tests.

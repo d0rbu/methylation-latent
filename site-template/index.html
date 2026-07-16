@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Methylation Latent</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">Sequence → co-methylation geometry</p>
+      <h1>Methylation Latent</h1>
+      <p id="status" class="status">Loading validated artifact registry…</p>
+      <div class="metadata">
+        <span id="protocol"></span>
+        <span id="eligibility" class="badge"></span>
+      </div>
+      <p id="provenance" class="status"></p>
+    </header>
+    <main>
+      <section>
+        <h2>Window sweep</h2>
+        <p>Seen × held-out and held-out × held-out remain separate.</p>
+        <div id="window-sweep" class="panel"></div>
+      </section>
+      <section>
+        <h2>Distance-stratified pair behavior</h2>
+        <p>The dashed curve is the frozen training-only <em>f</em>(|Δpos|) reference.</p>
+        <div id="distance-metrics" class="panel"></div>
+      </section>
+      <section>
+        <h2>Age head against preregistered baselines</h2>
+        <div id="age-metrics" class="panel"></div>
+      </section>
+      <section>
+        <h2>Held-out latent projection</h2>
+        <p>Axes are fit on training loci and applied to held-out loci.</p>
+        <div id="projection" class="panel"></div>
+      </section>
+      <section>
+        <h2>Artifact provenance</h2>
+        <ul id="artifacts"></ul>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
