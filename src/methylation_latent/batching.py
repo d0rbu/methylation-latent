@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -43,6 +44,7 @@ class GenomicBatchSampler:
     seed: int
     _generator: t.Generator = field(init=False, repr=False)
     _indices_by_chromosome: dict[int, tuple[int, ...]] = field(init=False, repr=False)
+    _positions_by_chromosome: dict[int, tuple[int, ...]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if int(self.batch_size) > len(self.probes):
@@ -64,6 +66,10 @@ class GenomicBatchSampler:
             )
             for chromosome, indices in grouped.items()
         }
+        self._positions_by_chromosome = {
+            chromosome: tuple(int(self.probes.probes[index].position) for index in indices)
+            for chromosome, indices in self._indices_by_chromosome.items()
+        }
 
     @jaxtyped(typechecker=beartype)
     def sample(self) -> ProbeBatch:
@@ -71,32 +77,30 @@ class GenomicBatchSampler:
 
         selected: list[int] = []
         selected_set: set[int] = set()
-        all_indices = t.arange(len(self.probes), dtype=t.int64)
         half_left = int(self.neighbourhood_width) // 2
         half_right = int(self.neighbourhood_width) - half_left
 
         while len(selected) < int(self.batch_size):
-            available = all_indices[
-                t.tensor(
-                    tuple(index not in selected_set for index in range(len(self.probes))),
-                    dtype=t.bool,
-                )
-            ]
-            if available.numel() == 0:
+            if len(selected_set) == len(self.probes):
                 raise RuntimeError("sampler exhausted probes before filling the batch")
-            anchor_offset = int(
-                t.randint(available.numel(), size=(), generator=self._generator).item()
+            anchor_index = int(
+                t.randint(len(self.probes), size=(), generator=self._generator).item()
             )
-            anchor_index = int(available[anchor_offset].item())
+            while anchor_index in selected_set:
+                anchor_index = int(
+                    t.randint(len(self.probes), size=(), generator=self._generator).item()
+                )
             anchor = self.probes.probes[anchor_index]
             anchor_position = int(anchor.position)
             lower = anchor_position - half_left
             upper = anchor_position + half_right
+            chromosome = int(anchor.chromosome)
+            positions = self._positions_by_chromosome[chromosome]
+            chromosome_indices = self._indices_by_chromosome[chromosome]
+            start = bisect_left(positions, lower)
+            stop = bisect_left(positions, upper)
             neighbourhood = tuple(
-                index
-                for index in self._indices_by_chromosome[int(anchor.chromosome)]
-                if index not in selected_set
-                and lower <= int(self.probes.probes[index].position) < upper
+                index for index in chromosome_indices[start:stop] if index not in selected_set
             )
             ordered = tuple(
                 sorted(

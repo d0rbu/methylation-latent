@@ -33,6 +33,7 @@ from methylation_latent.targets import (
     build_target_geometry,
 )
 from methylation_latent.training import (
+    RefitMetric,
     TrainedMetric,
     TrainingConfig,
     TrainingMode,
@@ -40,6 +41,7 @@ from methylation_latent.training import (
     ValidationData,
     ValidationStep,
     _cuda_fork_devices,
+    refit_latent_metric,
     train_latent_metric,
 )
 
@@ -281,6 +283,52 @@ def test_fixed_step_training_consumes_cached_embeddings(
         for step in trained.validation_history
     )
     assert all(parameter.dtype == t.float32 for parameter in trained.model.parameters())
+
+
+def test_final_refit_uses_only_the_selected_nonnegative_step_count(
+    make_probe: Callable[..., ProbeLocus],
+) -> None:
+    probes, embeddings, targets, _ = _tiny_training_inputs(make_probe)
+    config = TrainingConfig(
+        mode=TrainingMode.FULL,
+        latent_dimension=parse_latent_dimension(4),
+        lambda_age=parse_non_negative_weight(1.0),
+        batch_size=parse_positive_int(4),
+        neighbourhood_width=parse_positive_int(300),
+        steps=parse_positive_int(2),
+        validation_interval=parse_positive_int(1),
+        validation_pair_chunk_size=parse_positive_int(2),
+        learning_rate=1e-3,
+        seed=91,
+        device="cpu",
+    )
+    refit = refit_latent_metric(
+        probes,
+        embeddings,
+        targets,
+        config=config,
+        selected_steps=1,
+    )
+    assert refit.refit_steps == 1
+    assert tuple(step.step for step in refit.history) == (1,)
+    untrained = refit_latent_metric(
+        probes,
+        embeddings,
+        targets,
+        config=config,
+        selected_steps=0,
+    )
+    assert untrained.history == ()
+    with pytest.raises(ValueError, match="between zero"):
+        refit_latent_metric(
+            probes,
+            embeddings,
+            targets,
+            config=config,
+            selected_steps=3,
+        )
+    with pytest.raises(ValueError, match="refit history"):
+        RefitMetric(refit.model, refit.history, 0)
 
 
 def test_training_configs_and_records_reject_invalid_states(

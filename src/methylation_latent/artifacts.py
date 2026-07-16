@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from typing import cast
+from typing import TypeAlias, cast
 
 from beartype import beartype
 
@@ -21,8 +21,11 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$", flags=re.ASCII)
 _GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$", flags=re.ASCII)
 _ARTIFACT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{2,127}$", flags=re.ASCII)
 
-type JsonScalar = None | bool | int | float | str
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+# The isolated pinned Caduceus runtime is Python 3.11 and imports artifact helpers.
+JsonScalar: TypeAlias = None | bool | int | float | str  # noqa: UP040
+JsonValue: TypeAlias = (  # noqa: UP040
+    JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+)
 
 
 class Eligibility(StrEnum):
@@ -171,6 +174,7 @@ def write_canonical_json_exclusive(path: Path, value: JsonValue) -> None:
     """Write canonical JSON once; existing artifacts are immutable."""
 
     payload = canonical_json_bytes(value)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as handle:
         handle.write(payload)
         handle.flush()

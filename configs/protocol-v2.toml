@@ -1,0 +1,91 @@
+schema = "methylation-latent.protocol.v2"
+protocol_id = "gse87571-hg19-caduceus-ps-v2"
+status = "frozen"
+
+[data]
+accession = "GSE87571"
+raw_samples = 732
+age_eligible_samples = 729
+genome_build = "hg19/GRCh37"
+manifest_sha256 = "df3d5009d9b5b878507ba330bbcd7d2012455f6d0aa92c2df897f53a28452c33"
+series_matrix_sha256 = "4409fe0068511d0b22e501145cefa2fd978fadd74fe2b1d68e64fa63fed84fe6"
+additional_characteristics_sha256 = "829e6c484feb44188d4bb9eaf682f95f1f86a87f94510ba41e1866c26d327d90"
+filelist_sha256 = "cb5672a78e846289ba746af6f20ea8bcb791b9ae747514337b3936307c61b66f"
+raw_inventory_sha256 = "b0037d92fc9f3a5cc50bb940bc0e87d1682f93e747edba16214d9b37b0aa4be6"
+raw_inventory_fingerprint = "20fccbecf4b7e7b36f3099daf6084d9042fc3d9074bfa4bf0ab154eeca694ae0"
+raw_sentrix_order_sha256 = "c3700636dfdfa111c27bfc88def03cf3d95028d221c0fa63f1f0e4a90a198f74"
+age_eligible_order_sha256 = "839ea514d3993eadf749246941b1f31dfa5edd513ad12a8cd22695536c498553"
+reference_archive_md5 = "806c02398f5ac5da8ffd6da2d1d5d1a9"
+
+[reference_audit]
+payload_sha256 = "92b96d16b307d824f3b6b9dc63feb237a75226f82ca2166d51ecec039bee4449"
+coordinate_cpgs_verified = 405610
+maximum_window_size = 65536
+eligible_probes = 403573
+boundary_exclusions = 15
+non_acgt_exclusions = 2022
+eligible_probe_order_sha256 = "6a647c74a664bc693f67013c51046d163499839c843486f1c26ce6c5aa4ab4cf"
+
+[qc]
+detection_p_threshold = 0.05
+maximum_sample_failure_fraction = 0.05
+processor = "sesame-1.30.1-QCD-pOOBAH@0.05-noob-B"
+container_digest = "sha256:b10002b39efa30c3779ad839549806ebdbb29b3266f0d2428478b04426e55929"
+r_version = "4.6.0"
+bioconductor_release = "3.23"
+sesame_version = "1.30.1"
+sesame_data_version = "1.30.0"
+parity_arrays = 12
+parity_seed = 550319
+parity_processor = "methylprep-1.7.1-poobah-noob-nonlinear-dye"
+parity_audit_sha256 = "ff8a0606d041e22fd654005b9a0c1f83d780d1b7e1b6d7aa4b112679a149b095"
+
+[masks]
+chen_url = "https://raw.githubusercontent.com/sirselim/illumina450k_filtering/52ff77bb9dc631305e82cbeaac2027f361a7361f/48639-non-specific-probes-Illumina450k.csv"
+chen_sha256 = "4e962d36821f6f6fcd8b81cc0558090c028e54fbdb2c039a5712f9b471d9d89e"
+zhou_url = "https://zhouserver.research.chop.edu/InfiniumAnnotation/20180808/hm450/hm450.hg19.manifest.tsv.gz"
+zhou_sha256 = "94aaa52274738bbf8d767e56512b8fc36893c2cabffa202870531950bf522f0e"
+
+[model]
+repository = "kuleshov-group/caduceus-ps_seqlen-131k_d_model-256_n_layer-16"
+revision = "d89eeb853136ea64da7feb3d0c8e909771b17ae6"
+checkpoint_sha256 = "a3e6976fe90460ff5d90d371b457d0263dc65e156ea5651b4a452e98228daef2"
+embedding_width = 256
+precision = "float16"
+inference_batch_sizes = [512, 128, 32, 8]
+embedding_shard_size = 1024
+
+[splits]
+window_sizes = [1024, 4096, 16384, 65536]
+block_width = 262144
+anchors_per_context = 4
+held_out_chromosome = 7
+primary_seed = 740133
+validation_seed = 991027
+
+[targets]
+correlation_audit_probes = 256
+correlation_audit_seed = 161803
+
+[training]
+batch_size = 512
+neighbourhood_width = 1048576
+optimizer = "adam"
+learning_rate = 0.001
+weight_decay = 0.0
+tuning_steps = 2000
+validation_interval = 100
+validation_pair_chunk_size = 512
+training_seed = 851733
+full_checkpoint_rule = "minimum_unweighted_pair_plus_age_validation_mse"
+age_checkpoint_rule = "minimum_age_validation_mse"
+final_refit_rule = "selected_validation_step_on_complete_primary_train"
+
+[sweep]
+latent_dimensions = [16, 32, 64, 128, 256]
+lambda_age = [0.1, 1.0, 10.0]
+maximum_uniform_evaluation_pairs = 1000000
+maximum_pairs_per_distance_class = 100000
+uniform_evaluation_seed = 314159
+distance_evaluation_seed = 271828
+projection_window_size = 16384

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
@@ -267,8 +269,363 @@ def build_within_partition_pairs(
     )
 
 
+def _sorted_partition(
+    probes: NonEmptyProbeSet,
+    indices: t.Tensor,
+    name: str,
+) -> dict[int, tuple[tuple[int, ...], tuple[int, ...]]]:
+    _validate_partition_indices(indices, len(probes), name)
+    grouped: defaultdict[int, list[int]] = defaultdict(list)
+    for index in indices.tolist():
+        grouped[int(probes.probes[index].chromosome)].append(index)
+    result: dict[int, tuple[tuple[int, ...], tuple[int, ...]]] = {}
+    for chromosome, chromosome_indices in grouped.items():
+        ordered = tuple(
+            sorted(
+                chromosome_indices,
+                key=lambda index: (
+                    int(probes.probes[index].position),
+                    probes.probes[index].probe_id,
+                ),
+            )
+        )
+        result[chromosome] = (
+            ordered,
+            tuple(int(probes.probes[index].position) for index in ordered),
+        )
+    return result
+
+
+def _sample_segments(
+    segment_left: list[int],
+    segment_right_indices: list[tuple[int, ...]],
+    segment_starts: list[int],
+    segment_stops: list[int],
+    *,
+    maximum_pairs: int,
+    generator: t.Generator,
+) -> tuple[t.Tensor, t.Tensor, int]:
+    if not (
+        len(segment_left) == len(segment_right_indices) == len(segment_starts) == len(segment_stops)
+    ):
+        raise RuntimeError("pair-sampling segment fields are misaligned")
+    counts = tuple(stop - start for start, stop in zip(segment_starts, segment_stops, strict=True))
+    if any(count <= 0 for count in counts):
+        raise RuntimeError("pair-sampling segments must be non-empty")
+    cumulative: list[int] = []
+    total = 0
+    for count in counts:
+        total += count
+        cumulative.append(total)
+    if total == 0:
+        return t.empty(0, dtype=t.int64), t.empty(0, dtype=t.int64), 0
+    count = min(total, maximum_pairs)
+    ranks = (
+        t.arange(total, dtype=t.int64) if count == total else _floyd_sample(total, count, generator)
+    )
+    sampled_left: list[int] = []
+    sampled_right: list[int] = []
+    for rank in ranks.tolist():
+        segment = bisect_right(cumulative, rank)
+        previous = 0 if segment == 0 else cumulative[segment - 1]
+        offset = rank - previous
+        sampled_left.append(segment_left[segment])
+        sampled_right.append(segment_right_indices[segment][segment_starts[segment] + offset])
+    return (
+        t.tensor(sampled_left, dtype=t.int64),
+        t.tensor(sampled_right, dtype=t.int64),
+        total,
+    )
+
+
+def _within_cis_segments(
+    partition: dict[int, tuple[tuple[int, ...], tuple[int, ...]]],
+    *,
+    lower: int,
+    upper: int | None,
+) -> tuple[list[int], list[tuple[int, ...]], list[int], list[int]]:
+    segment_left: list[int] = []
+    segment_right_indices: list[tuple[int, ...]] = []
+    segment_starts: list[int] = []
+    segment_stops: list[int] = []
+    for indices, positions in partition.values():
+        for local_left, (global_left, position) in enumerate(zip(indices, positions, strict=True)):
+            start = bisect_left(positions, position + lower, lo=local_left + 1)
+            stop = (
+                len(positions)
+                if upper is None
+                else bisect_left(positions, position + upper, lo=local_left + 1)
+            )
+            if start < stop:
+                segment_left.append(global_left)
+                segment_right_indices.append(indices)
+                segment_starts.append(start)
+                segment_stops.append(stop)
+    return segment_left, segment_right_indices, segment_starts, segment_stops
+
+
+def _cross_cis_segments(
+    left_partition: dict[int, tuple[tuple[int, ...], tuple[int, ...]]],
+    right_partition: dict[int, tuple[tuple[int, ...], tuple[int, ...]]],
+    *,
+    lower: int,
+    upper: int | None,
+) -> tuple[list[int], list[tuple[int, ...]], list[int], list[int]]:
+    segment_left: list[int] = []
+    segment_right_indices: list[tuple[int, ...]] = []
+    segment_starts: list[int] = []
+    segment_stops: list[int] = []
+    for chromosome in sorted(left_partition.keys() & right_partition.keys()):
+        left_indices, left_positions = left_partition[chromosome]
+        right_indices, right_positions = right_partition[chromosome]
+        for global_left, position in zip(left_indices, left_positions, strict=True):
+            left_start = 0 if upper is None else bisect_left(right_positions, position - upper + 1)
+            left_stop = (
+                bisect_left(right_positions, position)
+                if lower == 0
+                else bisect_left(right_positions, position - lower + 1)
+            )
+            right_start = bisect_left(right_positions, position + lower)
+            right_stop = (
+                len(right_positions)
+                if upper is None
+                else bisect_left(right_positions, position + upper)
+            )
+            for start, stop in ((left_start, left_stop), (right_start, right_stop)):
+                if start < stop:
+                    segment_left.append(global_left)
+                    segment_right_indices.append(right_indices)
+                    segment_starts.append(start)
+                    segment_stops.append(stop)
+    return segment_left, segment_right_indices, segment_starts, segment_stops
+
+
+def _sample_trans_blocks(
+    left_partition: dict[int, tuple[tuple[int, ...], tuple[int, ...]]],
+    right_partition: dict[int, tuple[tuple[int, ...], tuple[int, ...]]],
+    *,
+    within_partition: bool,
+    maximum_pairs: int,
+    generator: t.Generator,
+) -> tuple[t.Tensor, t.Tensor, int]:
+    blocks: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+    for left_chromosome, (left_indices, _) in left_partition.items():
+        for right_chromosome, (right_indices, _) in right_partition.items():
+            allowed = (
+                left_chromosome < right_chromosome
+                if within_partition
+                else left_chromosome != right_chromosome
+            )
+            if allowed:
+                blocks.append((left_indices, right_indices))
+    block_counts = tuple(len(left) * len(right) for left, right in blocks)
+    cumulative: list[int] = []
+    total = 0
+    for count in block_counts:
+        total += count
+        cumulative.append(total)
+    if total == 0:
+        return t.empty(0, dtype=t.int64), t.empty(0, dtype=t.int64), 0
+    count = min(total, maximum_pairs)
+    ranks = (
+        t.arange(total, dtype=t.int64) if count == total else _floyd_sample(total, count, generator)
+    )
+    sampled_left: list[int] = []
+    sampled_right: list[int] = []
+    for rank in ranks.tolist():
+        block = bisect_right(cumulative, rank)
+        previous = 0 if block == 0 else cumulative[block - 1]
+        within_rank = rank - previous
+        left_indices, right_indices = blocks[block]
+        right_size = len(right_indices)
+        sampled_left.append(left_indices[within_rank // right_size])
+        sampled_right.append(right_indices[within_rank % right_size])
+    return (
+        t.tensor(sampled_left, dtype=t.int64),
+        t.tensor(sampled_right, dtype=t.int64),
+        total,
+    )
+
+
+def _distance_bounds(distance_class: DistanceClass) -> tuple[int, int | None]:
+    if distance_class == DistanceClass.TRANS:
+        raise ValueError("trans pairs do not have finite distance bounds")
+    boundaries = (0, *_CIS_BOUNDARIES)
+    lower = boundaries[int(distance_class)]
+    upper = (
+        None
+        if distance_class == DistanceClass.CIS_1MB_PLUS
+        else boundaries[int(distance_class) + 1]
+    )
+    return lower, upper
+
+
+def _finalize_stratified_pairs(
+    probes: NonEmptyProbeSet,
+    *,
+    population: PairPopulation,
+    left_parts: list[t.Tensor],
+    right_parts: list[t.Tensor],
+    class_parts: list[t.Tensor],
+    total_possible_pairs: int,
+    seed: int,
+) -> PairIndices:
+    if not left_parts:
+        raise ValueError("distance-stratified sampling found no possible pairs")
+    left = t.cat(left_parts)
+    right = t.cat(right_parts)
+    classes = t.cat(class_parts)
+    if population != PairPopulation.SEEN_BY_HELD_OUT:
+        canonical_left = t.minimum(left, right)
+        canonical_right = t.maximum(left, right)
+        left, right = canonical_left, canonical_right
+    order = t.argsort(classes * len(probes) * len(probes) + left * len(probes) + right)
+    left = left.index_select(0, order)
+    right = right.index_select(0, order)
+    classes = classes.index_select(0, order)
+    observed_classes = classify_distances(probes, left, right)
+    if not t.equal(classes, observed_classes):
+        raise RuntimeError("distance-stratified pair construction disagrees with its classifier")
+    return PairIndices(
+        population=population,
+        left=left,
+        right=right,
+        distance_class=classes,
+        total_possible_pairs=total_possible_pairs,
+        seed=seed,
+    )
+
+
+@beartype
+def build_stratified_within_partition_pairs(
+    probes: NonEmptyProbeSet,
+    indices: t.Tensor,
+    *,
+    population: PairPopulation,
+    maximum_pairs_per_distance_class: int,
+    seed: int,
+) -> PairIndices:
+    """Uniformly sample within each cis bin and trans without enumerating all pairs."""
+
+    if population == PairPopulation.SEEN_BY_HELD_OUT:
+        raise ValueError("cross-partition population is invalid for within-partition pairs")
+    if maximum_pairs_per_distance_class <= 0:
+        raise ValueError("maximum pairs per distance class must be positive")
+    partition = _sorted_partition(probes, indices, "within-partition")
+    generator = t.Generator(device="cpu").manual_seed(seed)
+    left_parts: list[t.Tensor] = []
+    right_parts: list[t.Tensor] = []
+    class_parts: list[t.Tensor] = []
+    for distance_class in tuple(DistanceClass)[:-1]:
+        lower, upper = _distance_bounds(distance_class)
+        left, right, _ = _sample_segments(
+            *_within_cis_segments(partition, lower=lower, upper=upper),
+            maximum_pairs=maximum_pairs_per_distance_class,
+            generator=generator,
+        )
+        if left.numel() > 0:
+            left_parts.append(left)
+            right_parts.append(right)
+            class_parts.append(t.full_like(left, fill_value=int(distance_class), dtype=t.int64))
+    trans_left, trans_right, _ = _sample_trans_blocks(
+        partition,
+        partition,
+        within_partition=True,
+        maximum_pairs=maximum_pairs_per_distance_class,
+        generator=generator,
+    )
+    if trans_left.numel() > 0:
+        left_parts.append(trans_left)
+        right_parts.append(trans_right)
+        class_parts.append(
+            t.full_like(trans_left, fill_value=int(DistanceClass.TRANS), dtype=t.int64)
+        )
+    total = indices.numel() * (indices.numel() - 1) // 2
+    return _finalize_stratified_pairs(
+        probes,
+        population=population,
+        left_parts=left_parts,
+        right_parts=right_parts,
+        class_parts=class_parts,
+        total_possible_pairs=total,
+        seed=seed,
+    )
+
+
+@beartype
+def build_stratified_cross_partition_pairs(
+    probes: NonEmptyProbeSet,
+    seen_indices: t.Tensor,
+    held_out_indices: t.Tensor,
+    *,
+    maximum_pairs_per_distance_class: int,
+    seed: int,
+) -> PairIndices:
+    """Uniformly sample seen-by-held-out pairs separately within every distance class."""
+
+    if maximum_pairs_per_distance_class <= 0:
+        raise ValueError("maximum pairs per distance class must be positive")
+    _validate_partition_indices(seen_indices, len(probes), "seen")
+    _validate_partition_indices(held_out_indices, len(probes), "held-out")
+    if bool(t.isin(seen_indices, held_out_indices).any().item()):
+        raise ValueError("seen and held-out partitions must be disjoint")
+    seen = _sorted_partition(probes, seen_indices, "seen")
+    held_out = _sorted_partition(probes, held_out_indices, "held-out")
+    generator = t.Generator(device="cpu").manual_seed(seed)
+    left_parts: list[t.Tensor] = []
+    right_parts: list[t.Tensor] = []
+    class_parts: list[t.Tensor] = []
+    for distance_class in tuple(DistanceClass)[:-1]:
+        lower, upper = _distance_bounds(distance_class)
+        left, right, _ = _sample_segments(
+            *_cross_cis_segments(seen, held_out, lower=lower, upper=upper),
+            maximum_pairs=maximum_pairs_per_distance_class,
+            generator=generator,
+        )
+        if left.numel() > 0:
+            left_parts.append(left)
+            right_parts.append(right)
+            class_parts.append(t.full_like(left, fill_value=int(distance_class), dtype=t.int64))
+    trans_left, trans_right, _ = _sample_trans_blocks(
+        seen,
+        held_out,
+        within_partition=False,
+        maximum_pairs=maximum_pairs_per_distance_class,
+        generator=generator,
+    )
+    if trans_left.numel() > 0:
+        left_parts.append(trans_left)
+        right_parts.append(trans_right)
+        class_parts.append(
+            t.full_like(trans_left, fill_value=int(DistanceClass.TRANS), dtype=t.int64)
+        )
+    return _finalize_stratified_pairs(
+        probes,
+        population=PairPopulation.SEEN_BY_HELD_OUT,
+        left_parts=left_parts,
+        right_parts=right_parts,
+        class_parts=class_parts,
+        total_possible_pairs=seen_indices.numel() * held_out_indices.numel(),
+        seed=seed,
+    )
+
+
 @jaxtyped(typechecker=beartype)
 def gather_pair_targets(rows: UnitNormRows, pairs: PairIndices) -> t.Tensor:
+    return gather_pair_targets_chunked(rows, pairs, chunk_size=pairs.count)
+
+
+@beartype
+def gather_pair_targets_chunked(
+    rows: UnitNormRows,
+    pairs: PairIndices,
+    *,
+    chunk_size: int,
+) -> t.Tensor:
+    """Gather exact dot products without materializing two full pair-by-sample matrices."""
+
+    if chunk_size <= 0:
+        raise ValueError("pair-target chunk size must be positive")
     if bool(
         t.any(
             (pairs.left < 0)
@@ -278,9 +635,16 @@ def gather_pair_targets(rows: UnitNormRows, pairs: PairIndices) -> t.Tensor:
         ).item()
     ):
         raise IndexError("pair target index is outside the standardized probe matrix")
-    left = rows.tensor.index_select(0, pairs.left)
-    right = rows.tensor.index_select(0, pairs.right)
-    return t.sum(left * right, dim=1)
+    chunks = tuple(
+        t.sum(
+            rows.tensor.index_select(0, pairs.left[start:stop])
+            * rows.tensor.index_select(0, pairs.right[start:stop]),
+            dim=1,
+        )
+        for start in range(0, pairs.count, chunk_size)
+        for stop in (min(start + chunk_size, pairs.count),)
+    )
+    return t.cat(chunks)
 
 
 @jaxtyped(typechecker=beartype)
@@ -288,6 +652,24 @@ def gather_pair_predictions(
     normalized_latent: LatentMatrix,
     pairs: PairIndices,
 ) -> t.Tensor:
+    return gather_pair_predictions_chunked(
+        normalized_latent,
+        pairs,
+        chunk_size=pairs.count,
+    )
+
+
+@beartype
+def gather_pair_predictions_chunked(
+    normalized_latent: t.Tensor,
+    pairs: PairIndices,
+    *,
+    chunk_size: int,
+) -> t.Tensor:
+    """Gather latent dot products with bounded pair-by-latent temporary storage."""
+
+    if chunk_size <= 0:
+        raise ValueError("pair-prediction chunk size must be positive")
     if normalized_latent.ndim != 2 or 0 in normalized_latent.shape:
         raise ValueError("latent matrix must be non-empty and rank two")
     if not normalized_latent.is_floating_point() or not bool(
@@ -307,9 +689,16 @@ def gather_pair_predictions(
         ).item()
     ):
         raise IndexError("pair prediction index is outside the latent matrix")
-    left = normalized_latent.index_select(0, pairs.left)
-    right = normalized_latent.index_select(0, pairs.right)
-    return t.sum(left * right, dim=1)
+    chunks = tuple(
+        t.sum(
+            normalized_latent.index_select(0, pairs.left[start:stop])
+            * normalized_latent.index_select(0, pairs.right[start:stop]),
+            dim=1,
+        )
+        for start in range(0, pairs.count, chunk_size)
+        for stop in (min(start + chunk_size, pairs.count),)
+    )
+    return t.cat(chunks)
 
 
 @dataclass(frozen=True, slots=True)

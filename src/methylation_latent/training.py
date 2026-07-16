@@ -136,6 +136,21 @@ class TrainedMetric:
             raise ValueError("selected checkpoint is absent from validation history")
 
 
+@dataclass(frozen=True, slots=True)
+class RefitMetric:
+    """Final model trained on the complete primary-train side for a frozen step count."""
+
+    model: LatentMetric
+    history: tuple[TrainingStep, ...]
+    refit_steps: int
+
+    def __post_init__(self) -> None:
+        if self.refit_steps < 0 or len(self.history) != self.refit_steps:
+            raise ValueError("refit history must exactly cover its non-negative step count")
+        if self.history and self.history[-1].step != self.refit_steps:
+            raise ValueError("refit history does not end at the frozen step count")
+
+
 def _cuda_fork_devices(device: t.device) -> list[int]:
     if device.type != "cuda":
         return []
@@ -213,6 +228,46 @@ def _exact_validation(
     )
 
 
+def _optimization_step(
+    model: LatentMetric,
+    optimizer: t.optim.Optimizer,
+    sampler: GenomicBatchSampler,
+    embedding_values: t.Tensor,
+    target_rows: t.Tensor,
+    target_rho: t.Tensor,
+    *,
+    config: TrainingConfig,
+    step: int,
+) -> TrainingStep:
+    batch_indices = sampler.sample().indices.to(embedding_values.device)
+    batch_embeddings = embedding_values.index_select(0, batch_indices)
+    batch_rho = CorrelationVector(target_rho.index_select(0, batch_indices))
+    latent = model.latent(batch_embeddings)
+    age_prediction = model.predict_age_from_latent(latent)
+    pair: PairObjectiveInput | None = None
+    if config.mode == TrainingMode.FULL:
+        selected_rows = target_rows.index_select(0, batch_indices)
+        pair = PairObjectiveInput(
+            prediction=model.predict_pairs_from_latent(latent),
+            target=CorrelationMatrix(selected_rows @ selected_rows.mT),
+        )
+    terms = metric_objective(
+        age_prediction,
+        batch_rho,
+        lambda_age=config.lambda_age,
+        pair=pair,
+    )
+    optimizer.zero_grad(set_to_none=True)
+    terms.total.backward()
+    optimizer.step()
+    return TrainingStep(
+        step=step,
+        total_loss=float(terms.total.detach().cpu().item()),
+        age_mse=float(terms.age_mse.detach().cpu().item()),
+        pair_mse=(None if terms.pair_mse is None else float(terms.pair_mse.detach().cpu().item())),
+    )
+
+
 @beartype
 def train_latent_metric(
     probes: NonEmptyProbeSet,
@@ -269,39 +324,16 @@ def train_latent_metric(
             name: value.detach().cpu().clone() for name, value in model.state_dict().items()
         }
         for step_index in range(int(config.steps)):
-            batch = sampler.sample()
-            batch_indices = batch.indices.to(device)
-            batch_embeddings = embedding_values.index_select(0, batch_indices)
-            batch_rho = CorrelationVector(target_rho.index_select(0, batch_indices))
-            latent = model.latent(batch_embeddings)
-            age_prediction = model.predict_age_from_latent(latent)
-            pair: PairObjectiveInput | None = None
-            if config.mode == TrainingMode.FULL:
-                selected_rows = target_rows.index_select(0, batch_indices)
-                pair_target = CorrelationMatrix(selected_rows @ selected_rows.mT)
-                pair = PairObjectiveInput(
-                    prediction=model.predict_pairs_from_latent(latent),
-                    target=pair_target,
-                )
-            terms = metric_objective(
-                age_prediction,
-                batch_rho,
-                lambda_age=config.lambda_age,
-                pair=pair,
-            )
-            optimizer.zero_grad(set_to_none=True)
-            terms.total.backward()
-            optimizer.step()
             history.append(
-                TrainingStep(
+                _optimization_step(
+                    model,
+                    optimizer,
+                    sampler,
+                    embedding_values,
+                    target_rows,
+                    target_rho,
+                    config=config,
                     step=step_index + 1,
-                    total_loss=float(terms.total.detach().cpu().item()),
-                    age_mse=float(terms.age_mse.detach().cpu().item()),
-                    pair_mse=(
-                        None
-                        if terms.pair_mse is None
-                        else float(terms.pair_mse.detach().cpu().item())
-                    ),
                 )
             )
             completed_steps = step_index + 1
@@ -331,4 +363,67 @@ def train_latent_metric(
         history=tuple(history),
         validation_history=tuple(validation_history),
         selected_step=best_record.step,
+    )
+
+
+@beartype
+def refit_latent_metric(
+    probes: NonEmptyProbeSet,
+    embeddings: EmbeddingMatrix,
+    targets: TargetGeometry,
+    *,
+    config: TrainingConfig,
+    selected_steps: int,
+) -> RefitMetric:
+    """Refit a validation-selected configuration without reopening held-out loci."""
+
+    if len(probes) != embeddings.tensor.shape[0] or len(probes) != targets.methylation.n_rows:
+        raise ValueError("refit probe, embedding, and target axes must align exactly")
+    if selected_steps < 0 or selected_steps > int(config.steps):
+        raise ValueError("refit steps must lie between zero and the tuning step budget")
+    validate_latent_dimension(
+        config.latent_dimension,
+        embedding_dimension=embeddings.tensor.shape[1],
+        n_samples=targets.methylation.n_samples,
+    )
+    if int(config.batch_size) > len(probes):
+        raise ValueError("refit batch size cannot exceed the aligned training universe")
+    device = t.device(config.device)
+    if device.type == "cuda" and not t.cuda.is_available():
+        raise ValueError("CUDA refit was requested but CUDA is unavailable")
+    sampler = GenomicBatchSampler(
+        probes=probes,
+        batch_size=config.batch_size,
+        neighbourhood_width=config.neighbourhood_width,
+        seed=config.seed,
+    )
+    embedding_values = embeddings.training_tensor(device=device)
+    target_rows = targets.methylation.tensor.to(device=device, dtype=t.float32)
+    target_rho = targets.rho.tensor.to(device=device, dtype=t.float32)
+
+    with t.random.fork_rng(devices=_cuda_fork_devices(device)):
+        t.manual_seed(config.seed)
+        model = LatentMetric(
+            embedding_dimension=embedding_values.shape[1],
+            latent_dimension=config.latent_dimension,
+        ).to(device)
+        optimizer = make_optimizer(model, learning_rate=config.learning_rate)
+        history: list[TrainingStep] = []
+        for step_index in range(selected_steps):
+            history.append(
+                _optimization_step(
+                    model,
+                    optimizer,
+                    sampler,
+                    embedding_values,
+                    target_rows,
+                    target_rho,
+                    config=config,
+                    step=step_index + 1,
+                )
+            )
+    return RefitMetric(
+        model=model,
+        history=tuple(history),
+        refit_steps=selected_steps,
     )

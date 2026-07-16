@@ -85,7 +85,7 @@ process_sample <- function(sentrix_identity, prefix) {
     corrected <- prepSesame(signal, prep = "QCD")
     quality_excluded <- setNames(as.logical(corrected$mask), corrected$Probe_ID)
     detection_p <- pOOBAH(corrected, return.pval = TRUE)
-    corrected <- pOOBAH(corrected, pval.threshold = 0.01)
+    corrected <- pOOBAH(corrected, pval.threshold = 0.05)
     corrected <- noob(corrected)
     beta <- getBetas(corrected, mask = FALSE)
     probe_ids <- names(beta)
@@ -215,7 +215,7 @@ writeLines(
         sprintf("Bioconductor=%s", as.character(BiocManager::version())),
         sprintf("sesame=%s", as.character(packageVersion("sesame"))),
         sprintf("sesameData=%s", as.character(packageVersion("sesameData"))),
-        "pipeline=QCD-pOOBAH@0.01-B",
+        "pipeline=QCD-pOOBAH@0.05-B",
         "probe_filter=^cg[0-9]{8}$",
         "beta_mask=false",
         sprintf("samples=%d", nrow(samples)),

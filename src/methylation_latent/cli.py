@@ -17,11 +17,6 @@ from methylation_latent.manifest import (
     load_zhou2017_mask_general,
     parse_gpl13534_manifest,
 )
-from methylation_latent.metadata import (
-    assert_gzip_integrity,
-    join_sample_key,
-    parse_series_matrix_metadata,
-)
 from methylation_latent.site import build_static_site
 
 
@@ -31,12 +26,6 @@ def _parser() -> argparse.ArgumentParser:
 
     check_config = subcommands.add_parser("check-config")
     check_config.add_argument("--config", type=Path, required=True)
-
-    audit = subcommands.add_parser("audit-public-inputs")
-    audit.add_argument("--config", type=Path, required=True)
-    audit.add_argument("--manifest", type=Path, required=True)
-    audit.add_argument("--series-matrix", type=Path, required=True)
-    audit.add_argument("--sample-key", type=Path, required=True)
 
     mask_audit = subcommands.add_parser("audit-exclusion-lists")
     mask_audit.add_argument("--config", type=Path, required=True)
@@ -102,45 +91,6 @@ def main() -> None:
                 },
                 "zhou_mask_general_cpgs": len(zhou.probe_ids),
                 "zhou_sha256": zhou.sha256,
-            }
-        )
-        return
-    if arguments.command == "audit-public-inputs":
-        config = load_protocol_config(arguments.config)
-        expected_hashes = (
-            ("manifest", arguments.manifest, config.data.manifest_sha256),
-            ("series matrix", arguments.series_matrix, config.data.series_matrix_sha256),
-            ("sample key", arguments.sample_key, config.data.sample_key_sha256),
-        )
-        observed_hashes: dict[str, str] = {}
-        for name, path, expected in expected_hashes:
-            observed = sha256_file(path)
-            if observed != expected:
-                raise ValueError(f"{name} hash differs: expected={expected}, observed={observed}")
-            observed_hashes[name] = observed
-        assert_gzip_integrity(arguments.manifest)
-        assert_gzip_integrity(arguments.series_matrix)
-        assert_gzip_integrity(arguments.sample_key)
-        manifest = parse_gpl13534_manifest(arguments.manifest)
-        series = parse_series_matrix_metadata(
-            arguments.series_matrix,
-            expected_sample_count=config.data.expected_samples,
-        )
-        samples = join_sample_key(series, arguments.sample_key)
-        if samples.order_sha256 != config.data.sample_order_sha256:
-            raise ValueError(
-                "sample order hash differs: "
-                f"expected={config.data.sample_order_sha256}, observed={samples.order_sha256}"
-            )
-        _json_print(
-            {
-                "eligible_autosomal_cpg_probes_before_published_masks": len(manifest.probes),
-                "manifest_exclusions": len(manifest.exclusions),
-                "manifest_rows": manifest.total_assay_rows,
-                "ordered_samples": len(samples),
-                "sample_order_sha256": samples.order_sha256,
-                "series_matrix_sha256": observed_hashes["series matrix"],
-                "sample_key_sha256": observed_hashes["sample key"],
             }
         )
         return

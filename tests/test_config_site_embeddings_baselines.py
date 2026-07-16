@@ -45,18 +45,20 @@ REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
 def test_protocol_configuration_is_strict_and_reviewed() -> None:
-    config = load_protocol_config(REPOSITORY_ROOT / "configs/protocol-v1.toml")
+    config = load_protocol_config(REPOSITORY_ROOT / "configs/protocol-v2.toml")
     assert tuple(map(int, config.splits.window_sizes)) == (1024, 4096, 16384, 65536)
     assert tuple(map(int, config.sweep.latent_dimensions)) == (16, 32, 64, 128, 256)
     assert tuple(map(float, config.sweep.lambda_age)) == (0.1, 1.0, 10.0)
-    assert int(config.data.expected_samples) == 656
+    assert int(config.data.raw_samples) == 732
+    assert int(config.data.age_eligible_samples) == 729
     assert int(config.reference_audit.eligible_probes) == 403573
     assert config.reference_audit.boundary_exclusions == 15
-    assert config.status == "draft"
+    assert int(config.training.tuning_steps) == 2000
+    assert config.status == "frozen"
 
 
 def test_protocol_configuration_rejects_unknown_fields(tmp_path: Path) -> None:
-    text = (REPOSITORY_ROOT / "configs/protocol-v1.toml").read_text(encoding="utf-8")
+    text = (REPOSITORY_ROOT / "configs/protocol-v2.toml").read_text(encoding="utf-8")
     path = tmp_path / "bad.toml"
     path.write_text(f"{text}\nunknown = 1\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unknown"):
@@ -67,29 +69,31 @@ def test_protocol_configuration_rejects_unknown_fields(tmp_path: Path) -> None:
 
 
 def test_protocol_configuration_rejects_every_frozen_identity_and_sweep_drift() -> None:
-    config = load_protocol_config(REPOSITORY_ROOT / "configs/protocol-v1.toml")
+    config = load_protocol_config(REPOSITORY_ROOT / "configs/protocol-v2.toml")
     invalid: tuple[tuple[Callable[[], object], str], ...] = (
-        (lambda: replace(config.data, accession="GSE0"), "accession/build"),
-        (lambda: replace(config.data, expected_samples=1), "exactly 656"),
-        (lambda: replace(config.data, manifest_sha256="0" * 64), "manifest fingerprint"),
+        (lambda: replace(config.data, accession="GSE0"), "data identity"),
+        (lambda: replace(config.data, raw_samples=1), "data identity"),
+        (lambda: replace(config.data, manifest_sha256="0" * 64), "data identity"),
         (
             lambda: replace(config.data, series_matrix_sha256="0" * 64),
-            "series.*fingerprint",
+            "data identity",
         ),
-        (lambda: replace(config.data, reference_archive_md5="bad"), "reference archive"),
+        (lambda: replace(config.data, reference_archive_md5="bad"), "data identity"),
         (
             lambda: replace(config.reference_audit, eligible_probes=1),
-            "reference-audit result",
+            "reference audit",
         ),
-        (lambda: replace(config.qc, processor="unknown"), "processor"),
-        (lambda: replace(config.qc, parity_arrays=11), "at least 12"),
+        (lambda: replace(config.qc, processor="unknown"), "seSAMe QC identity"),
+        (lambda: replace(config.qc, parity_arrays=11), "seSAMe QC identity"),
         (
-            lambda: replace(config.qc, reference_sesame_version="devel"),
-            "parity-reference identity",
+            lambda: replace(config.qc, sesame_version="devel"),
+            "seSAMe QC identity",
         ),
         (lambda: replace(config.masks, chen_sha256="0" * 64), "probe-mask identity"),
-        (lambda: replace(config.model, revision="main"), "Caduceus identity"),
+        (lambda: replace(config.model, revision="main"), "Caduceus inference identity"),
         (lambda: replace(config.splits, primary_seed=config.splits.validation_seed), "must differ"),
+        (lambda: replace(config.targets, correlation_audit_probes=1), "target-correlation"),
+        (lambda: replace(config.training, tuning_steps=1), "optimization schedule"),
         (
             lambda: replace(
                 config.sweep,
@@ -98,19 +102,19 @@ def test_protocol_configuration_rejects_every_frozen_identity_and_sweep_drift() 
                     config.sweep.latent_dimensions[-1],
                 ),
             ),
-            "unique and increasing",
+            "latent-dimension sweep",
         ),
         (
             lambda: replace(
                 config.sweep,
                 latent_dimensions=(*config.sweep.latent_dimensions[:-1], 257),
             ),
-            "exceeds Caduceus",
+            "latent-dimension sweep",
         ),
-        (lambda: replace(config.sweep, lambda_age=(0.0,)), "positive"),
+        (lambda: replace(config.sweep, lambda_age=(0.0,)), "age-loss sweep"),
         (lambda: replace(config, schema="unknown"), "unknown protocol"),
-        (lambda: replace(config, status="complete"), "draft.*frozen"),
-        (lambda: replace(config, protocol_id=""), "must not be empty"),
+        (lambda: replace(config, status="draft"), "status must be frozen"),
+        (lambda: replace(config, protocol_id=""), "protocol ID differs"),
     )
     for constructor, message in invalid:
         with pytest.raises(ValueError, match=message):
@@ -538,6 +542,21 @@ def test_site_scalar_and_panel_types_reject_plausible_but_invalid_values() -> No
     with pytest.raises(ValueError, match="bounded"):
         DistanceMetricPoint(1024, population, "cis_0_1kb", 1, 1.1, 0.0, 0.0, 0.1, 0.2, 0.0)
     with pytest.raises(ValueError, match="non-negative"):
+        DistanceMetricPoint(
+            1024,
+            population,
+            "cis_0_1kb",
+            1,
+            0.0,
+            0.0,
+            0.0,
+            -0.1,
+            0.2,
+            0.0,
+        )
+    with pytest.raises(ValueError, match="window and count"):
+        AgeMetricPoint(0, "sequence_features", 1, 0.1, 0.2)
+    with pytest.raises(ValueError, match="non-negative"):
         AgeMetricPoint(1024, "sequence_features", 1, -0.1, 0.2)
     with pytest.raises(ValueError, match="unknown age"):
         AgeMetricPoint(1024, "unknown", 1, 0.1, 0.2)
@@ -590,6 +609,54 @@ def test_primary_site_rejects_duplicate_or_cross_window_incomplete_panels(tmp_pa
         load_site_data(path)
 
 
+def test_primary_site_rejects_each_incomplete_population_and_projection_contract(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "valid.json"
+    path.write_text(json.dumps(_primary_site_payload()), encoding="utf-8")
+    data = load_site_data(path)
+    with pytest.raises(ValueError, match="window sweep must contain both"):
+        replace(data, window_sweep=data.window_sweep[:1])
+    with pytest.raises(ValueError, match="distance metrics must contain both"):
+        replace(
+            data,
+            distance_metrics=tuple(
+                point
+                for point in data.distance_metrics
+                if point.population == PairPopulation.SEEN_BY_HELD_OUT
+            ),
+        )
+    with pytest.raises(ValueError, match="every genomic context"):
+        replace(data, projection=data.projection[:-1])
+    with pytest.raises(ValueError, match="duplicate stratum"):
+        replace(data, distance_metrics=(*data.distance_metrics, data.distance_metrics[0]))
+    with pytest.raises(ValueError, match="duplicate window/stage"):
+        replace(data, age_metrics=(*data.age_metrics, data.age_metrics[0]))
+    with pytest.raises(ValueError, match="duplicate probe IDs"):
+        replace(data, projection=(*data.projection, data.projection[0]))
+
+
+def test_site_parser_and_builder_reject_unknown_fields_and_missing_assets(
+    tmp_path: Path,
+) -> None:
+    raw = _primary_site_payload()
+    raw["unknown"] = 1
+    path = tmp_path / "unknown.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="fields differ"):
+        load_site_data(path)
+    valid = tmp_path / "valid.json"
+    valid.write_text(json.dumps(_primary_site_payload()), encoding="utf-8")
+    template = tmp_path / "template"
+    template.mkdir()
+    with pytest.raises(FileNotFoundError):
+        build_static_site(
+            data_path=valid,
+            template_directory=template,
+            output_directory=tmp_path / "site",
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -619,11 +686,11 @@ def test_cli_check_config_and_build_site(
             "methylation-latent",
             "check-config",
             "--config",
-            str(REPOSITORY_ROOT / "configs/protocol-v1.toml"),
+            str(REPOSITORY_ROOT / "configs/protocol-v2.toml"),
         ],
     )
     cli.main()
-    assert '"status": "draft"' in capsys.readouterr().out
+    assert '"status": "frozen"' in capsys.readouterr().out
     output = tmp_path / "cli-site"
     monkeypatch.setattr(
         sys,
@@ -644,62 +711,7 @@ def test_cli_check_config_and_build_site(
     assert '"eligibility": "audit_only"' in capsys.readouterr().out
 
 
-def test_cli_public_audit_dispatch_and_hash_gate(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    config_path = REPOSITORY_ROOT / "configs/protocol-v1.toml"
-    manifest_path = Path("manifest.gz")
-    arguments = [
-        "methylation-latent",
-        "audit-public-inputs",
-        "--config",
-        str(config_path),
-        "--manifest",
-        str(manifest_path),
-        "--series-matrix",
-        "series.gz",
-        "--sample-key",
-        "key.gz",
-    ]
-    monkeypatch.setattr(sys, "argv", arguments)
-    monkeypatch.setattr(cli, "sha256_file", lambda _: "0" * 64)
-    with pytest.raises(ValueError, match="manifest hash differs"):
-        cli.main()
-
-    config = load_protocol_config(config_path)
-    hashes = {
-        "manifest.gz": config.data.manifest_sha256,
-        "series.gz": config.data.series_matrix_sha256,
-        "key.gz": config.data.sample_key_sha256,
-    }
-    monkeypatch.setattr(cli, "sha256_file", lambda path: hashes[path.name])
-    monkeypatch.setattr(cli, "assert_gzip_integrity", lambda _: 1)
-    monkeypatch.setattr(
-        cli,
-        "parse_gpl13534_manifest",
-        lambda _: SimpleNamespace(probes=(1, 2), exclusions=(1,), total_assay_rows=3),
-    )
-    monkeypatch.setattr(cli, "parse_series_matrix_metadata", lambda *_args, **_kwargs: ("series",))
-
-    # SimpleNamespace does not make a special method visible; use a tiny concrete class.
-    class Samples:
-        order_sha256 = config.data.sample_order_sha256
-
-        def __len__(self) -> int:
-            return 1
-
-    class WrongSamples:
-        order_sha256 = "f" * 64
-
-        def __len__(self) -> int:
-            return 1
-
-    monkeypatch.setattr(cli, "join_sample_key", lambda *_: WrongSamples())
-    with pytest.raises(ValueError, match="sample order hash differs"):
-        cli.main()
-    monkeypatch.setattr(cli, "join_sample_key", lambda *_: Samples())
-    cli.main()
-    assert '"manifest_rows": 3' in capsys.readouterr().out
+def test_cli_unreachable_dispatch_is_loud() -> None:
     with pytest.raises(RuntimeError, match="unreachable"):
         cli._unreachable("future-command")
 
@@ -707,7 +719,7 @@ def test_cli_public_audit_dispatch_and_hash_gate(
 def test_cli_exclusion_audit_reports_the_applied_union(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    config_path = REPOSITORY_ROOT / "configs/protocol-v1.toml"
+    config_path = REPOSITORY_ROOT / "configs/protocol-v2.toml"
     config = load_protocol_config(config_path)
     monkeypatch.setattr(
         sys,
@@ -761,7 +773,7 @@ def test_cli_exclusion_audit_reports_the_applied_union(
 def test_cli_reference_audit_verifies_every_external_identity(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    config_path = REPOSITORY_ROOT / "configs/protocol-v1.toml"
+    config_path = REPOSITORY_ROOT / "configs/protocol-v2.toml"
     config = load_protocol_config(config_path)
     monkeypatch.setattr(
         sys,

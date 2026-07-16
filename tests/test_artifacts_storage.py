@@ -81,8 +81,9 @@ def test_canonical_json_is_stable_and_exclusive(tmp_path: Path) -> None:
     assert canonical_json_bytes({"b": 1, "a": 2}) == b'{"a":2,"b":1}\n'
     with pytest.raises(ValueError):
         canonical_json_bytes({"bad": float("nan")})
-    path = tmp_path / "record.json"
+    path = tmp_path / "nested" / "record.json"
     write_canonical_json_exclusive(path, {"ok": True})
+    assert path.read_bytes() == b'{"ok":true}\n'
     with pytest.raises(FileExistsError):
         write_canonical_json_exclusive(path, {"ok": False})
 

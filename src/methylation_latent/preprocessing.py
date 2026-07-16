@@ -129,10 +129,12 @@ def assert_processor_parity(
     quality_indices = t.nonzero(methylprep_quality_retained).flatten()
     if quality_indices.numel() < 2:
         raise ValueError("processor parity quality masks retained fewer than two probes")
-    methylprep_passed = methylprep_detection_p.index_select(0, quality_indices) < float(
+    methylprep_passed = methylprep_detection_p.index_select(0, quality_indices) <= float(
         detection_threshold
     )
-    sesame_passed = sesame_detection_p.index_select(0, quality_indices) < float(detection_threshold)
+    sesame_passed = sesame_detection_p.index_select(0, quality_indices) <= float(
+        detection_threshold
+    )
     agreement = methylprep_passed == sesame_passed
     overall_agreement = float(agreement.to(t.float64).mean().item())
     per_array_agreement = agreement.to(t.float64).mean(dim=0)
@@ -213,13 +215,13 @@ def apply_detection_qc(
     detection_threshold: Fraction,
     maximum_sample_failure_fraction: Fraction,
 ) -> DetectionQcResult:
-    """Retain p<threshold calls; remove samples first, then require complete probes."""
+    """Retain p<=threshold calls; remove samples first, then require complete probes."""
 
     _validate_probability_matrix(normalized_beta, "normalized beta matrix")
     _validate_probability_matrix(detection_p, "detection-p matrix")
     if normalized_beta.shape != detection_p.shape:
         raise ValueError("beta and detection-p matrices must have identical axes")
-    passed = detection_p < float(detection_threshold)
+    passed = detection_p <= float(detection_threshold)
     failure_fractions = (~passed).to(t.float64).mean(dim=0)
     retained_sample_mask = failure_fractions <= float(maximum_sample_failure_fraction)
     if not bool(retained_sample_mask.any().item()):

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Methylation Latent · Results</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Sequence → co-methylation geometry</p>
+      <h1>Methylation Latent</h1>
+      <p class="lede">
+        GSE87571 held-out results are reported under two deliberately separate
+        generalization tests. Choose a split; metrics are never pooled across them.
+      </p>
+      <nav aria-label="Result split families">
+        <a href="diverse-blocks/">
+          <strong>Diverse held-out blocks</strong>
+          <span>Target-blind blocks spread across chromosomes and CpG contexts, with a 64-kb buffer.</span>
+        </a>
+        <a href="held-out-chromosome/">
+          <strong>Held-out chromosome 7</strong>
+          <span>The stricter chromosome-wide distribution shift.</span>
+        </a>
+      </nav>
+      <p class="caveat">
+        These are single-seed protocol-v2 results. Pair populations, distance
+        strata, and age baselines remain separate throughout.
+      </p>
+    </main>
+  </body>
+</html>

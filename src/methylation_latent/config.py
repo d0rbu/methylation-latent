@@ -1,7 +1,8 @@
-"""Strict, versioned protocol configuration with no ignored fields."""
+"""Strict frozen GSE87571 experiment configuration with no ignored fields."""
 
 from __future__ import annotations
 
+import math
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -45,12 +46,27 @@ from methylation_latent.manifest import (
     ZHOU2017_MASK_GENERAL_URL,
 )
 from methylation_latent.metadata import (
-    GSE40279_SAMPLE_KEY_SHA256,
-    GSE40279_SAMPLE_ORDER_SHA256,
-    GSE40279_SERIES_MATRIX_SHA256,
+    GSE87571_ADDITIONAL_CHARACTERISTICS_SHA256,
+    GSE87571_AGE_ELIGIBLE_SAMPLE_COUNT,
+    GSE87571_FILELIST_SHA256,
+    GSE87571_RAW_SAMPLE_COUNT,
+    GSE87571_SERIES_MATRIX_SHA256,
 )
 
 _PRIMARY_WINDOWS = (1_024, 4_096, 16_384, 65_536)
+_PRIMARY_INFERENCE_BATCH_SIZES = (512, 128, 32, 8)
+_GSE87571_RAW_INVENTORY_SHA256 = "b0037d92fc9f3a5cc50bb940bc0e87d1682f93e747edba16214d9b37b0aa4be6"
+_GSE87571_RAW_INVENTORY_FINGERPRINT = (
+    "20fccbecf4b7e7b36f3099daf6084d9042fc3d9074bfa4bf0ab154eeca694ae0"
+)
+_GSE87571_RAW_SENTRIX_ORDER_SHA256 = (
+    "c3700636dfdfa111c27bfc88def03cf3d95028d221c0fa63f1f0e4a90a198f74"
+)
+_GSE87571_AGE_ELIGIBLE_ORDER_SHA256 = (
+    "839ea514d3993eadf749246941b1f31dfa5edd513ad12a8cd22695536c498553"
+)
+_SESAME_CONTAINER_DIGEST = "sha256:b10002b39efa30c3779ad839549806ebdbb29b3266f0d2428478b04426e55929"
+_PARITY_AUDIT_SHA256 = "ff8a0606d041e22fd654005b9a0c1f83d780d1b7e1b6d7aa4b112679a149b095"
 
 
 def _exact_keys(raw: Mapping[str, object], expected: set[str], context: str) -> None:
@@ -78,7 +94,10 @@ def _integer(value: object, name: str) -> int:
 def _number(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError(f"configuration field {name!r} must be numeric")
-    return float(value)
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"configuration field {name!r} must be finite")
+    return parsed
 
 
 def _string(value: object, name: str) -> str:
@@ -96,64 +115,52 @@ def _list(value: object, name: str) -> list[object]:
 @dataclass(frozen=True, slots=True)
 class DataConfig:
     accession: str
-    expected_samples: PositiveInt
+    raw_samples: PositiveInt
+    age_eligible_samples: PositiveInt
     genome_build: str
     manifest_sha256: str
     series_matrix_sha256: str
-    sample_key_sha256: str
-    sample_order_sha256: str
+    additional_characteristics_sha256: str
+    filelist_sha256: str
+    raw_inventory_sha256: str
+    raw_inventory_fingerprint: str
+    raw_sentrix_order_sha256: str
+    age_eligible_order_sha256: str
     reference_archive_md5: str
 
     def __post_init__(self) -> None:
-        if self.accession != "GSE40279" or self.genome_build != "hg19/GRCh37":
-            raise ValueError("data accession/build differ from the primary protocol")
-        if int(self.expected_samples) != 656:
-            raise ValueError("GSE40279 protocol expects exactly 656 pre-QC samples")
-        if self.manifest_sha256 != GPL13534_V11_SHA256:
-            raise ValueError("manifest fingerprint differs from reviewed GPL13534 v1.1")
-        observed_geo = (
+        observed = (
+            self.accession,
+            int(self.raw_samples),
+            int(self.age_eligible_samples),
+            self.genome_build,
+            self.manifest_sha256,
             self.series_matrix_sha256,
-            self.sample_key_sha256,
-            self.sample_order_sha256,
+            self.additional_characteristics_sha256,
+            self.filelist_sha256,
+            self.raw_inventory_sha256,
+            self.raw_inventory_fingerprint,
+            self.raw_sentrix_order_sha256,
+            self.age_eligible_order_sha256,
+            self.reference_archive_md5,
         )
-        expected_geo = (
-            GSE40279_SERIES_MATRIX_SHA256,
-            GSE40279_SAMPLE_KEY_SHA256,
-            GSE40279_SAMPLE_ORDER_SHA256,
+        expected = (
+            "GSE87571",
+            GSE87571_RAW_SAMPLE_COUNT,
+            GSE87571_AGE_ELIGIBLE_SAMPLE_COUNT,
+            "hg19/GRCh37",
+            GPL13534_V11_SHA256,
+            GSE87571_SERIES_MATRIX_SHA256,
+            GSE87571_ADDITIONAL_CHARACTERISTICS_SHA256,
+            GSE87571_FILELIST_SHA256,
+            _GSE87571_RAW_INVENTORY_SHA256,
+            _GSE87571_RAW_INVENTORY_FINGERPRINT,
+            _GSE87571_RAW_SENTRIX_ORDER_SHA256,
+            _GSE87571_AGE_ELIGIBLE_ORDER_SHA256,
+            UCSC_HG19_FASTA_ARCHIVE_MD5,
         )
-        if observed_geo != expected_geo:
-            raise ValueError("GSE40279 series, sample-key, or sample-order fingerprint differs")
-        if self.reference_archive_md5 != UCSC_HG19_FASTA_ARCHIVE_MD5:
-            raise ValueError("reference archive fingerprint differs from UCSC hg19")
-
-
-@dataclass(frozen=True, slots=True)
-class QcConfig:
-    detection_p_threshold: Fraction
-    maximum_sample_failure_fraction: Fraction
-    processor: str
-    parity_arrays: PositiveInt
-    parity_seed: int
-    reference_processor: str
-    reference_r_version: str
-    reference_bioconductor_release: str
-    reference_sesame_version: str
-    reference_sesame_data_version: str
-
-    def __post_init__(self) -> None:
-        if self.processor != "methylprep-1.7.1-poobah-noob-nonlinear-dye":
-            raise ValueError("primary preprocessing processor differs from the reviewed protocol")
-        if int(self.parity_arrays) < 12:
-            raise ValueError("seSAMe parity gate requires at least 12 arrays")
-        reference_identity = (
-            self.reference_processor,
-            self.reference_r_version,
-            self.reference_bioconductor_release,
-            self.reference_sesame_version,
-            self.reference_sesame_data_version,
-        )
-        if reference_identity != ("sesame-QCDPB", "4.6", "3.23", "1.30.1", "1.30.0"):
-            raise ValueError("seSAMe parity-reference identity differs from protocol v1")
+        if observed != expected:
+            raise ValueError("GSE87571 data identity differs from the frozen primary protocol")
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +193,55 @@ class ReferenceAuditConfig:
             PRIMARY_REFERENCE_ELIGIBLE_ORDER_SHA256,
         )
         if observed != expected:
-            raise ValueError("hg19 exhaustive reference-audit result differs from protocol v1")
+            raise ValueError("hg19 exhaustive reference audit differs from protocol v2")
+
+
+@dataclass(frozen=True, slots=True)
+class QcConfig:
+    detection_p_threshold: Fraction
+    maximum_sample_failure_fraction: Fraction
+    processor: str
+    container_digest: str
+    r_version: str
+    bioconductor_release: str
+    sesame_version: str
+    sesame_data_version: str
+    parity_arrays: PositiveInt
+    parity_seed: int
+    parity_processor: str
+    parity_audit_sha256: str
+
+    def __post_init__(self) -> None:
+        observed = (
+            float(self.detection_p_threshold),
+            float(self.maximum_sample_failure_fraction),
+            self.processor,
+            self.container_digest,
+            self.r_version,
+            self.bioconductor_release,
+            self.sesame_version,
+            self.sesame_data_version,
+            int(self.parity_arrays),
+            self.parity_seed,
+            self.parity_processor,
+            self.parity_audit_sha256,
+        )
+        expected = (
+            0.05,
+            0.05,
+            "sesame-1.30.1-QCD-pOOBAH@0.05-noob-B",
+            _SESAME_CONTAINER_DIGEST,
+            "4.6.0",
+            "3.23",
+            "1.30.1",
+            "1.30.0",
+            12,
+            550319,
+            "methylprep-1.7.1-poobah-noob-nonlinear-dye",
+            _PARITY_AUDIT_SHA256,
+        )
+        if observed != expected:
+            raise ValueError("primary seSAMe QC identity differs from protocol v2")
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +260,7 @@ class MaskConfig:
             ZHOU2017_MASK_GENERAL_SHA256,
         )
         if observed != expected:
-            raise ValueError("published probe-mask identity differs from the frozen protocol")
+            raise ValueError("published probe-mask identity differs from protocol v2")
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,22 +269,31 @@ class ModelConfig:
     revision: str
     checkpoint_sha256: str
     embedding_width: PositiveInt
+    precision: str
+    inference_batch_sizes: tuple[PositiveInt, ...]
+    embedding_shard_size: PositiveInt
 
     def __post_init__(self) -> None:
-        expected = (
-            CADUCEUS_REPOSITORY,
-            CADUCEUS_REVISION,
-            CADUCEUS_CHECKPOINT_SHA256,
-            CADUCEUS_EMBEDDING_WIDTH,
-        )
         observed = (
             self.repository,
             self.revision,
             self.checkpoint_sha256,
             int(self.embedding_width),
+            self.precision,
+            tuple(map(int, self.inference_batch_sizes)),
+            int(self.embedding_shard_size),
+        )
+        expected = (
+            CADUCEUS_REPOSITORY,
+            CADUCEUS_REVISION,
+            CADUCEUS_CHECKPOINT_SHA256,
+            CADUCEUS_EMBEDDING_WIDTH,
+            "float16",
+            _PRIMARY_INFERENCE_BATCH_SIZES,
+            1_024,
         )
         if observed != expected:
-            raise ValueError("Caduceus identity differs from the frozen protocol")
+            raise ValueError("Caduceus inference identity differs from protocol v2")
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,20 +313,82 @@ class SplitConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TargetConfig:
+    correlation_audit_probes: PositiveInt
+    correlation_audit_seed: int
+
+    def __post_init__(self) -> None:
+        if int(self.correlation_audit_probes) != 256 or self.correlation_audit_seed != 161_803:
+            raise ValueError("target-correlation audit schedule differs from protocol v2")
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingProtocolConfig:
+    batch_size: PositiveInt
+    neighbourhood_width: PositiveInt
+    optimizer: str
+    learning_rate: float
+    weight_decay: float
+    tuning_steps: PositiveInt
+    validation_interval: PositiveInt
+    validation_pair_chunk_size: PositiveInt
+    training_seed: int
+    full_checkpoint_rule: str
+    age_checkpoint_rule: str
+    final_refit_rule: str
+
+    def __post_init__(self) -> None:
+        if (
+            int(self.batch_size) != 512
+            or int(self.neighbourhood_width) != 1_048_576
+            or self.optimizer != "adam"
+            or self.learning_rate != 0.001
+            or self.weight_decay != 0.0
+            or int(self.tuning_steps) != 2_000
+            or int(self.validation_interval) != 100
+            or int(self.validation_pair_chunk_size) != 512
+            or self.training_seed != 851_733
+        ):
+            raise ValueError("optimization schedule differs from protocol v2")
+        rules = (
+            self.full_checkpoint_rule,
+            self.age_checkpoint_rule,
+            self.final_refit_rule,
+        )
+        expected_rules = (
+            "minimum_unweighted_pair_plus_age_validation_mse",
+            "minimum_age_validation_mse",
+            "selected_validation_step_on_complete_primary_train",
+        )
+        if rules != expected_rules:
+            raise ValueError("checkpoint or final-refit rule differs from protocol v2")
+
+
+@dataclass(frozen=True, slots=True)
 class SweepConfig:
     latent_dimensions: tuple[LatentDimension, ...]
     lambda_age: tuple[NonNegativeWeight, ...]
-    maximum_evaluation_pairs: PositiveInt
+    maximum_uniform_evaluation_pairs: PositiveInt
+    maximum_pairs_per_distance_class: PositiveInt
+    uniform_evaluation_seed: int
+    distance_evaluation_seed: int
+    projection_window_size: WindowSize
 
     def __post_init__(self) -> None:
         dimensions = tuple(map(int, self.latent_dimensions))
         lambdas = tuple(map(float, self.lambda_age))
-        if len(set(dimensions)) != len(dimensions) or tuple(sorted(dimensions)) != dimensions:
-            raise ValueError("latent dimensions must be unique and increasing")
-        if max(dimensions) > CADUCEUS_EMBEDDING_WIDTH:
-            raise ValueError("latent sweep exceeds Caduceus input width")
-        if len(set(lambdas)) != len(lambdas) or any(value <= 0.0 for value in lambdas):
-            raise ValueError("age-loss weights must be unique and positive")
+        if dimensions != (16, 32, 64, 128, 256):
+            raise ValueError("latent-dimension sweep differs from protocol v2")
+        if lambdas != (0.1, 1.0, 10.0):
+            raise ValueError("age-loss sweep differs from protocol v2")
+        if (
+            int(self.maximum_uniform_evaluation_pairs) != 1_000_000
+            or int(self.maximum_pairs_per_distance_class) != 100_000
+            or self.uniform_evaluation_seed != 314_159
+            or self.distance_evaluation_seed != 271_828
+            or int(self.projection_window_size) != 16_384
+        ):
+            raise ValueError("evaluation schedule differs from protocol v2")
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,15 +402,17 @@ class ProtocolConfig:
     masks: MaskConfig
     model: ModelConfig
     splits: SplitConfig
+    targets: TargetConfig
+    training: TrainingProtocolConfig
     sweep: SweepConfig
 
     def __post_init__(self) -> None:
-        if self.schema != "methylation-latent.protocol.v1":
+        if self.schema != "methylation-latent.protocol.v2":
             raise ValueError("unknown protocol configuration schema")
-        if self.status not in {"draft", "frozen"}:
-            raise ValueError("protocol status must be 'draft' or 'frozen'")
-        if not self.protocol_id:
-            raise ValueError("protocol ID must not be empty")
+        if self.status != "frozen":
+            raise ValueError("protocol v2 status must be frozen")
+        if self.protocol_id != "gse87571-hg19-caduceus-ps-v2":
+            raise ValueError("protocol ID differs from the reviewed v2 identity")
 
 
 def load_protocol_config(path: Path) -> ProtocolConfig:
@@ -301,6 +429,8 @@ def load_protocol_config(path: Path) -> ProtocolConfig:
             "masks",
             "model",
             "splits",
+            "targets",
+            "training",
             "sweep",
         },
         "protocol",
@@ -311,17 +441,24 @@ def load_protocol_config(path: Path) -> ProtocolConfig:
     masks = _table(raw, "masks")
     model = _table(raw, "model")
     splits = _table(raw, "splits")
+    targets = _table(raw, "targets")
+    training = _table(raw, "training")
     sweep = _table(raw, "sweep")
     _exact_keys(
         data,
         {
             "accession",
-            "expected_samples",
+            "raw_samples",
+            "age_eligible_samples",
             "genome_build",
             "manifest_sha256",
             "series_matrix_sha256",
-            "sample_key_sha256",
-            "sample_order_sha256",
+            "additional_characteristics_sha256",
+            "filelist_sha256",
+            "raw_inventory_sha256",
+            "raw_inventory_fingerprint",
+            "raw_sentrix_order_sha256",
+            "age_eligible_order_sha256",
             "reference_archive_md5",
         },
         "data",
@@ -345,18 +482,32 @@ def load_protocol_config(path: Path) -> ProtocolConfig:
             "detection_p_threshold",
             "maximum_sample_failure_fraction",
             "processor",
+            "container_digest",
+            "r_version",
+            "bioconductor_release",
+            "sesame_version",
+            "sesame_data_version",
             "parity_arrays",
             "parity_seed",
-            "reference_processor",
-            "reference_r_version",
-            "reference_bioconductor_release",
-            "reference_sesame_version",
-            "reference_sesame_data_version",
+            "parity_processor",
+            "parity_audit_sha256",
         },
         "qc",
     )
     _exact_keys(masks, {"chen_url", "chen_sha256", "zhou_url", "zhou_sha256"}, "masks")
-    _exact_keys(model, {"repository", "revision", "checkpoint_sha256", "embedding_width"}, "model")
+    _exact_keys(
+        model,
+        {
+            "repository",
+            "revision",
+            "checkpoint_sha256",
+            "embedding_width",
+            "precision",
+            "inference_batch_sizes",
+            "embedding_shard_size",
+        },
+        "model",
+    )
     _exact_keys(
         splits,
         {
@@ -369,21 +520,73 @@ def load_protocol_config(path: Path) -> ProtocolConfig:
         },
         "splits",
     )
-    _exact_keys(sweep, {"latent_dimensions", "lambda_age", "maximum_evaluation_pairs"}, "sweep")
+    _exact_keys(
+        targets,
+        {
+            "correlation_audit_probes",
+            "correlation_audit_seed",
+        },
+        "targets",
+    )
+    _exact_keys(
+        training,
+        {
+            "batch_size",
+            "neighbourhood_width",
+            "optimizer",
+            "learning_rate",
+            "weight_decay",
+            "tuning_steps",
+            "validation_interval",
+            "validation_pair_chunk_size",
+            "training_seed",
+            "full_checkpoint_rule",
+            "age_checkpoint_rule",
+            "final_refit_rule",
+        },
+        "training",
+    )
+    _exact_keys(
+        sweep,
+        {
+            "latent_dimensions",
+            "lambda_age",
+            "maximum_uniform_evaluation_pairs",
+            "maximum_pairs_per_distance_class",
+            "uniform_evaluation_seed",
+            "distance_evaluation_seed",
+            "projection_window_size",
+        },
+        "sweep",
+    )
     return ProtocolConfig(
         schema=_string(raw["schema"], "schema"),
         protocol_id=_string(raw["protocol_id"], "protocol_id"),
         status=_string(raw["status"], "status"),
         data=DataConfig(
             accession=_string(data["accession"], "data.accession"),
-            expected_samples=parse_positive_int(
-                _integer(data["expected_samples"], "data.expected_samples")
+            raw_samples=parse_positive_int(_integer(data["raw_samples"], "data.raw_samples")),
+            age_eligible_samples=parse_positive_int(
+                _integer(data["age_eligible_samples"], "data.age_eligible_samples")
             ),
             genome_build=_string(data["genome_build"], "data.genome_build"),
             manifest_sha256=_string(data["manifest_sha256"], "data.manifest_sha256"),
             series_matrix_sha256=_string(data["series_matrix_sha256"], "data.series_matrix_sha256"),
-            sample_key_sha256=_string(data["sample_key_sha256"], "data.sample_key_sha256"),
-            sample_order_sha256=_string(data["sample_order_sha256"], "data.sample_order_sha256"),
+            additional_characteristics_sha256=_string(
+                data["additional_characteristics_sha256"],
+                "data.additional_characteristics_sha256",
+            ),
+            filelist_sha256=_string(data["filelist_sha256"], "data.filelist_sha256"),
+            raw_inventory_sha256=_string(data["raw_inventory_sha256"], "data.raw_inventory_sha256"),
+            raw_inventory_fingerprint=_string(
+                data["raw_inventory_fingerprint"], "data.raw_inventory_fingerprint"
+            ),
+            raw_sentrix_order_sha256=_string(
+                data["raw_sentrix_order_sha256"], "data.raw_sentrix_order_sha256"
+            ),
+            age_eligible_order_sha256=_string(
+                data["age_eligible_order_sha256"], "data.age_eligible_order_sha256"
+            ),
             reference_archive_md5=_string(
                 data["reference_archive_md5"], "data.reference_archive_md5"
             ),
@@ -428,21 +631,15 @@ def load_protocol_config(path: Path) -> ProtocolConfig:
                 _number(qc["maximum_sample_failure_fraction"], "qc.maximum_sample_failure_fraction")
             ),
             processor=_string(qc["processor"], "qc.processor"),
+            container_digest=_string(qc["container_digest"], "qc.container_digest"),
+            r_version=_string(qc["r_version"], "qc.r_version"),
+            bioconductor_release=_string(qc["bioconductor_release"], "qc.bioconductor_release"),
+            sesame_version=_string(qc["sesame_version"], "qc.sesame_version"),
+            sesame_data_version=_string(qc["sesame_data_version"], "qc.sesame_data_version"),
             parity_arrays=parse_positive_int(_integer(qc["parity_arrays"], "qc.parity_arrays")),
             parity_seed=_integer(qc["parity_seed"], "qc.parity_seed"),
-            reference_processor=_string(qc["reference_processor"], "qc.reference_processor"),
-            reference_r_version=_string(qc["reference_r_version"], "qc.reference_r_version"),
-            reference_bioconductor_release=_string(
-                qc["reference_bioconductor_release"],
-                "qc.reference_bioconductor_release",
-            ),
-            reference_sesame_version=_string(
-                qc["reference_sesame_version"], "qc.reference_sesame_version"
-            ),
-            reference_sesame_data_version=_string(
-                qc["reference_sesame_data_version"],
-                "qc.reference_sesame_data_version",
-            ),
+            parity_processor=_string(qc["parity_processor"], "qc.parity_processor"),
+            parity_audit_sha256=_string(qc["parity_audit_sha256"], "qc.parity_audit_sha256"),
         ),
         masks=MaskConfig(
             chen_url=_string(masks["chen_url"], "masks.chen_url"),
@@ -456,6 +653,17 @@ def load_protocol_config(path: Path) -> ProtocolConfig:
             checkpoint_sha256=_string(model["checkpoint_sha256"], "model.checkpoint_sha256"),
             embedding_width=parse_positive_int(
                 _integer(model["embedding_width"], "model.embedding_width")
+            ),
+            precision=_string(model["precision"], "model.precision"),
+            inference_batch_sizes=tuple(
+                parse_positive_int(_integer(value, "model.inference_batch_sizes[]"))
+                for value in _list(
+                    model["inference_batch_sizes"],
+                    "model.inference_batch_sizes",
+                )
+            ),
+            embedding_shard_size=parse_positive_int(
+                _integer(model["embedding_shard_size"], "model.embedding_shard_size")
             ),
         ),
         splits=SplitConfig(
@@ -473,6 +681,50 @@ def load_protocol_config(path: Path) -> ProtocolConfig:
             primary_seed=_integer(splits["primary_seed"], "splits.primary_seed"),
             validation_seed=_integer(splits["validation_seed"], "splits.validation_seed"),
         ),
+        targets=TargetConfig(
+            correlation_audit_probes=parse_positive_int(
+                _integer(
+                    targets["correlation_audit_probes"],
+                    "targets.correlation_audit_probes",
+                )
+            ),
+            correlation_audit_seed=_integer(
+                targets["correlation_audit_seed"],
+                "targets.correlation_audit_seed",
+            ),
+        ),
+        training=TrainingProtocolConfig(
+            batch_size=parse_positive_int(_integer(training["batch_size"], "training.batch_size")),
+            neighbourhood_width=parse_positive_int(
+                _integer(training["neighbourhood_width"], "training.neighbourhood_width")
+            ),
+            optimizer=_string(training["optimizer"], "training.optimizer"),
+            learning_rate=_number(training["learning_rate"], "training.learning_rate"),
+            weight_decay=_number(training["weight_decay"], "training.weight_decay"),
+            tuning_steps=parse_positive_int(
+                _integer(training["tuning_steps"], "training.tuning_steps")
+            ),
+            validation_interval=parse_positive_int(
+                _integer(
+                    training["validation_interval"],
+                    "training.validation_interval",
+                )
+            ),
+            validation_pair_chunk_size=parse_positive_int(
+                _integer(
+                    training["validation_pair_chunk_size"],
+                    "training.validation_pair_chunk_size",
+                )
+            ),
+            training_seed=_integer(training["training_seed"], "training.training_seed"),
+            full_checkpoint_rule=_string(
+                training["full_checkpoint_rule"], "training.full_checkpoint_rule"
+            ),
+            age_checkpoint_rule=_string(
+                training["age_checkpoint_rule"], "training.age_checkpoint_rule"
+            ),
+            final_refit_rule=_string(training["final_refit_rule"], "training.final_refit_rule"),
+        ),
         sweep=SweepConfig(
             latent_dimensions=tuple(
                 parse_latent_dimension(_integer(value, "sweep.latent_dimensions[]"))
@@ -482,8 +734,31 @@ def load_protocol_config(path: Path) -> ProtocolConfig:
                 parse_non_negative_weight(_number(value, "sweep.lambda_age[]"))
                 for value in _list(sweep["lambda_age"], "sweep.lambda_age")
             ),
-            maximum_evaluation_pairs=parse_positive_int(
-                _integer(sweep["maximum_evaluation_pairs"], "sweep.maximum_evaluation_pairs")
+            maximum_uniform_evaluation_pairs=parse_positive_int(
+                _integer(
+                    sweep["maximum_uniform_evaluation_pairs"],
+                    "sweep.maximum_uniform_evaluation_pairs",
+                )
+            ),
+            maximum_pairs_per_distance_class=parse_positive_int(
+                _integer(
+                    sweep["maximum_pairs_per_distance_class"],
+                    "sweep.maximum_pairs_per_distance_class",
+                )
+            ),
+            uniform_evaluation_seed=_integer(
+                sweep["uniform_evaluation_seed"],
+                "sweep.uniform_evaluation_seed",
+            ),
+            distance_evaluation_seed=_integer(
+                sweep["distance_evaluation_seed"],
+                "sweep.distance_evaluation_seed",
+            ),
+            projection_window_size=parse_window_size(
+                _integer(
+                    sweep["projection_window_size"],
+                    "sweep.projection_window_size",
+                )
             ),
         ),
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import struct
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -45,6 +46,7 @@ from methylation_latent.processor_io import (
     _assert_idat_magic,
     _load_exact_vector,
     _read_nonempty_unique_lines,
+    compare_sesame_threshold_outputs,
     load_sesame_output,
     select_processor_output_probes,
 )
@@ -95,6 +97,77 @@ def _processor_output() -> ProcessorOutput:
         detection_p=t.tensor(((0.001, 0.002), (0.003, 0.004)), dtype=t.float64),
         quality_excluded=t.zeros((2, 2), dtype=t.bool),
     )
+
+
+def _write_sesame_fixture(
+    directory: Path,
+    *,
+    threshold: str,
+    beta_columns: tuple[tuple[float, ...], ...],
+) -> tuple[str, ...]:
+    sample_ids = ("sample-1", "sample-2")
+    probe_ids = ("cg00000001", "cg00000002")
+    directory.mkdir()
+    (directory / "probe_ids.txt").write_text("\n".join(probe_ids) + "\n", encoding="utf-8")
+    (directory / "sample_order.txt").write_text(
+        "\n".join(sample_ids) + "\n",
+        encoding="utf-8",
+    )
+    environment = (
+        "R=4.6.0",
+        "Bioconductor=3.23",
+        "sesame=1.30.1",
+        "sesameData=1.30.0",
+        f"pipeline=QCD-pOOBAH@{threshold}-B",
+        "probe_filter=^cg[0-9]{8}$",
+        "beta_mask=false",
+        f"samples={len(sample_ids)}",
+        f"probes={len(probe_ids)}",
+    )
+    (directory / "environment.txt").write_text(
+        "\n".join(environment) + "\n",
+        encoding="utf-8",
+    )
+    for sample_id, beta in zip(sample_ids, beta_columns, strict=True):
+        (directory / f"{sample_id}.beta.f64").write_bytes(struct.pack(f"<{len(beta)}d", *beta))
+        (directory / f"{sample_id}.detection_p.f64").write_bytes(struct.pack("<2d", 0.001, 0.002))
+        (directory / f"{sample_id}.quality_excluded.u8").write_bytes(b"\x00\x01")
+    return sample_ids
+
+
+def test_sesame_threshold_comparison_streams_exact_axes_and_payloads(
+    tmp_path: Path,
+) -> None:
+    audit = tmp_path / "p001"
+    primary = tmp_path / "p005"
+    sample_ids = _write_sesame_fixture(
+        audit,
+        threshold="0.01",
+        beta_columns=((0.1, 0.2), (0.3, 0.4)),
+    )
+    _write_sesame_fixture(
+        primary,
+        threshold="0.05",
+        beta_columns=((0.1, 0.2), (0.3, 0.5)),
+    )
+    comparison = compare_sesame_threshold_outputs(
+        audit,
+        primary,
+        expected_sample_ids=sample_ids,
+    )
+    assert comparison.probe_count == 2
+    assert comparison.sample_count == 2
+    assert comparison.beta_nonidentical_values == 1
+    assert comparison.beta_maximum_absolute_difference == pytest.approx(0.1)
+    assert comparison.beta_mean_absolute_difference == pytest.approx(0.025)
+
+    (primary / "sample-1.detection_p.f64").write_bytes(struct.pack("<2d", 0.001, 0.003))
+    with pytest.raises(ValueError, match="raw detection-p"):
+        compare_sesame_threshold_outputs(
+            audit,
+            primary,
+            expected_sample_ids=sample_ids,
+        )
 
 
 def _public_panel(*, variants: int = 104) -> PublicGenotypePanel:

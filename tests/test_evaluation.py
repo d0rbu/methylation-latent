@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import shutil
 from collections.abc import Callable
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
 import pytest
 import torch as t
@@ -18,16 +23,29 @@ from methylation_latent.evaluation import (
     _floyd_sample,
     _pair_limit,
     build_cross_partition_pairs,
+    build_stratified_cross_partition_pairs,
+    build_stratified_within_partition_pairs,
     build_within_partition_pairs,
     classify_distances,
     fit_distance_baseline,
     fit_projection_2d,
     gather_pair_predictions,
+    gather_pair_predictions_chunked,
     gather_pair_targets,
+    gather_pair_targets_chunked,
     metrics_by_distance,
     regression_metrics,
 )
-from methylation_latent.targets import standardize_rows
+from methylation_latent.evaluation_cache import (
+    CachedPairSet,
+    EvaluationPairCache,
+    EvaluationPairCacheIdentity,
+    PairSetName,
+    build_evaluation_pair_cache,
+    load_evaluation_pair_cache,
+    save_evaluation_pair_cache_exclusive,
+)
+from methylation_latent.targets import UnitNormRows, standardize_rows
 
 
 def _distance_probe_universe(make_probe: Callable[..., ProbeLocus]) -> NonEmptyProbeSet:
@@ -111,6 +129,287 @@ def test_within_partition_rank_mapping_matches_all_combinations(
     )
     assert capped.count == 4
     assert bool(t.all(capped.left < capped.right).item())
+
+
+def test_distance_stratified_pair_sampling_matches_brute_force_when_uncapped(
+    make_probe: Callable[..., ProbeLocus],
+) -> None:
+    probes = _distance_probe_universe(make_probe)
+    all_indices = t.arange(len(probes), dtype=t.int64)
+    expected_within = build_within_partition_pairs(
+        probes,
+        all_indices,
+        population=PairPopulation.TRAINING_BY_TRAINING,
+        maximum_pairs=None,
+        seed=1,
+    )
+    observed_within = build_stratified_within_partition_pairs(
+        probes,
+        all_indices,
+        population=PairPopulation.TRAINING_BY_TRAINING,
+        maximum_pairs_per_distance_class=100,
+        seed=1,
+    )
+    expected_pairs = set(
+        zip(expected_within.left.tolist(), expected_within.right.tolist(), strict=True)
+    )
+    observed_pairs = set(
+        zip(observed_within.left.tolist(), observed_within.right.tolist(), strict=True)
+    )
+    assert observed_pairs == expected_pairs
+    assert set(observed_within.distance_class.tolist()) == set(range(8))
+
+    seen = t.tensor([0, 2, 4, 8], dtype=t.int64)
+    held_out = t.tensor([1, 3, 5, 6, 7], dtype=t.int64)
+    expected_cross = build_cross_partition_pairs(
+        probes,
+        seen,
+        held_out,
+        maximum_pairs=None,
+        seed=2,
+    )
+    observed_cross = build_stratified_cross_partition_pairs(
+        probes,
+        seen,
+        held_out,
+        maximum_pairs_per_distance_class=100,
+        seed=2,
+    )
+    assert set(
+        zip(observed_cross.left.tolist(), observed_cross.right.tolist(), strict=True)
+    ) == set(zip(expected_cross.left.tolist(), expected_cross.right.tolist(), strict=True))
+
+
+def test_distance_stratified_pair_sampling_is_capped_and_deterministic(
+    make_probe: Callable[..., ProbeLocus],
+) -> None:
+    probes = _distance_probe_universe(make_probe)
+    indices = t.arange(len(probes), dtype=t.int64)
+    first = build_stratified_within_partition_pairs(
+        probes,
+        indices,
+        population=PairPopulation.HELD_OUT_BY_HELD_OUT,
+        maximum_pairs_per_distance_class=1,
+        seed=9,
+    )
+    second = build_stratified_within_partition_pairs(
+        probes,
+        indices,
+        population=PairPopulation.HELD_OUT_BY_HELD_OUT,
+        maximum_pairs_per_distance_class=1,
+        seed=9,
+    )
+    assert t.equal(first.left, second.left)
+    assert t.equal(first.right, second.right)
+    assert int(t.bincount(first.distance_class, minlength=8).max().item()) == 1
+    with pytest.raises(ValueError, match="must be positive"):
+        build_stratified_within_partition_pairs(
+            probes,
+            indices,
+            population=PairPopulation.TRAINING_BY_TRAINING,
+            maximum_pairs_per_distance_class=0,
+            seed=1,
+        )
+
+
+def test_evaluation_pair_cache_round_trips_fixed_pairs_and_targets(
+    make_probe: Callable[..., ProbeLocus],
+    tmp_path: Path,
+) -> None:
+    probes = _distance_probe_universe(make_probe)
+    extended = NonEmptyProbeSet(
+        (
+            *probes.probes,
+            make_probe(10, chromosome=1, position=1_002_000),
+            make_probe(11, chromosome=2, position=2_000_000),
+            make_probe(12, chromosome=3, position=3_000_000),
+        )
+    )
+    generator = t.Generator().manual_seed(41)
+    rows = standardize_rows(t.rand((len(extended), 7), generator=generator, dtype=t.float64))
+    built = build_evaluation_pair_cache(
+        extended,
+        rows,
+        t.arange(9, dtype=t.int64),
+        t.arange(9, 12, dtype=t.int64),
+        maximum_uniform_pairs=5,
+        maximum_pairs_per_distance_class=3,
+        uniform_seed=17,
+        distance_seed=23,
+        target_chunk_size=2,
+    )
+    assert built.pair_sets[PairSetName.SEEN_UNIFORM].pairs.count == 5
+    assert built.pair_sets[PairSetName.HELD_OUT_UNIFORM].pairs.count == 3
+    assert set(
+        built.pair_sets[PairSetName.TRAINING_STRATIFIED].pairs.distance_class.tolist()
+    ) == set(range(8))
+    with pytest.raises(ValueError, match="global probe universe"):
+        build_evaluation_pair_cache(
+            extended,
+            UnitNormRows(rows.tensor[:-1]),
+            t.arange(9, dtype=t.int64),
+            t.arange(9, 12, dtype=t.int64),
+            maximum_uniform_pairs=5,
+            maximum_pairs_per_distance_class=3,
+            uniform_seed=17,
+            distance_seed=23,
+            target_chunk_size=2,
+        )
+    for uniform_cap, distance_cap, chunk_size in (
+        (0, 3, 2),
+        (5, 0, 2),
+        (5, 3, 0),
+    ):
+        with pytest.raises(ValueError, match="must be positive"):
+            build_evaluation_pair_cache(
+                extended,
+                rows,
+                t.arange(9, dtype=t.int64),
+                t.arange(9, 12, dtype=t.int64),
+                maximum_uniform_pairs=uniform_cap,
+                maximum_pairs_per_distance_class=distance_cap,
+                uniform_seed=17,
+                distance_seed=23,
+                target_chunk_size=chunk_size,
+            )
+    example = built.pair_sets[PairSetName.SEEN_UNIFORM]
+    with pytest.raises(TypeError, match="float64 vector"):
+        CachedPairSet(example.pairs, example.targets.float())
+    with pytest.raises(ValueError, match="different lengths"):
+        CachedPairSet(example.pairs, t.zeros(example.pairs.count + 1, dtype=t.float64))
+    nonfinite = example.targets.clone()
+    nonfinite[0] = t.nan
+    with pytest.raises(ValueError, match="finite"):
+        CachedPairSet(example.pairs, nonfinite)
+    unbounded = example.targets.clone()
+    unbounded[0] = 1.1
+    with pytest.raises(ValueError, match="correlation bounds"):
+        CachedPairSet(example.pairs, unbounded)
+    missing_pair_set = dict(built.pair_sets)
+    del missing_pair_set[PairSetName.SEEN_UNIFORM]
+    with pytest.raises(ValueError, match="five frozen"):
+        EvaluationPairCache(missing_pair_set, built.distance_baseline)
+    wrong_population = dict(built.pair_sets)
+    wrong_population[PairSetName.SEEN_UNIFORM] = built.pair_sets[PairSetName.HELD_OUT_UNIFORM]
+    with pytest.raises(ValueError, match="wrong pair population"):
+        EvaluationPairCache(wrong_population, built.distance_baseline)
+    with pytest.raises(ValueError, match="distance baseline differs"):
+        EvaluationPairCache(
+            built.pair_sets,
+            replace(
+                built.distance_baseline,
+                means=built.distance_baseline.means + 0.01,
+            ),
+        )
+    with pytest.raises(ValueError, match="protocol and split"):
+        replace(
+            EvaluationPairCacheIdentity(
+                protocol_id="test",
+                protocol_sha256="a" * 64,
+                data_sha256="b" * 64,
+                target_sha256="c" * 64,
+                split_name="split",
+                split_sha256="d" * 64,
+                probe_order_sha256="e" * 64,
+            ),
+            protocol_id="",
+        )
+    with pytest.raises(ValueError, match="SHA-256"):
+        EvaluationPairCacheIdentity(
+            protocol_id="test",
+            protocol_sha256="bad",
+            data_sha256="b" * 64,
+            target_sha256="c" * 64,
+            split_name="split",
+            split_sha256="d" * 64,
+            probe_order_sha256="e" * 64,
+        )
+    identity = EvaluationPairCacheIdentity(
+        protocol_id="test-protocol",
+        protocol_sha256="a" * 64,
+        data_sha256="b" * 64,
+        target_sha256="c" * 64,
+        split_name="test-split",
+        split_sha256="d" * 64,
+        probe_order_sha256="e" * 64,
+    )
+    directory = tmp_path / "pairs"
+    save_evaluation_pair_cache_exclusive(directory, built, identity)
+    loaded = load_evaluation_pair_cache(directory, identity)
+    for name in PairSetName:
+        assert t.equal(loaded.pair_sets[name].pairs.left, built.pair_sets[name].pairs.left)
+        assert t.equal(loaded.pair_sets[name].pairs.right, built.pair_sets[name].pairs.right)
+        assert t.equal(loaded.pair_sets[name].targets, built.pair_sets[name].targets)
+    assert t.equal(loaded.distance_baseline.means, built.distance_baseline.means)
+    with pytest.raises(FileExistsError):
+        save_evaluation_pair_cache_exclusive(directory, built, identity)
+    with pytest.raises(ValueError, match="identity differs"):
+        load_evaluation_pair_cache(
+            directory,
+            EvaluationPairCacheIdentity(
+                protocol_id="other-protocol",
+                protocol_sha256="a" * 64,
+                data_sha256="b" * 64,
+                target_sha256="c" * 64,
+                split_name="test-split",
+                split_sha256="d" * 64,
+                probe_order_sha256="e" * 64,
+            ),
+        )
+    extra = tmp_path / "extra-file"
+    shutil.copytree(directory, extra)
+    (extra / "unknown").write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="file inventory"):
+        load_evaluation_pair_cache(extra, identity)
+
+    def corrupted_copy(name: str) -> tuple[Path, dict[str, Any]]:
+        destination = tmp_path / name
+        shutil.copytree(directory, destination)
+        metadata_path = destination / "metadata.json"
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+        return destination, raw
+
+    malformed, raw = corrupted_copy("malformed-envelope")
+    raw["unknown"] = 1
+    (malformed / "metadata.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="metadata envelope"):
+        load_evaluation_pair_cache(malformed, identity)
+
+    fingerprint, raw = corrupted_copy("fingerprint")
+    raw["payload_sha256"] = "0" * 64
+    (fingerprint / "metadata.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="payload fingerprint"):
+        load_evaluation_pair_cache(fingerprint, identity)
+
+    short, raw = corrupted_copy("short-manifest")
+    raw["pair_sets"] = raw["pair_sets"][:-1]
+    (short / "metadata.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="manifest length"):
+        load_evaluation_pair_cache(short, identity)
+
+    bad_fields, raw = corrupted_copy("record-fields")
+    del raw["pair_sets"][0]["seed"]
+    (bad_fields / "metadata.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="record fields"):
+        load_evaluation_pair_cache(bad_fields, identity)
+
+    duplicate, raw = corrupted_copy("duplicate-record")
+    raw["pair_sets"][1]["name"] = raw["pair_sets"][0]["name"]
+    (duplicate / "metadata.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="contains duplicates"):
+        load_evaluation_pair_cache(duplicate, identity)
+
+    wrong_count, raw = corrupted_copy("wrong-count")
+    raw["pair_sets"][0]["count"] += 1
+    (wrong_count / "metadata.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="manifest differs"):
+        load_evaluation_pair_cache(wrong_count, identity)
+
+    wrong_type, raw = corrupted_copy("wrong-type")
+    raw["pair_sets"][0]["total_possible_pairs"] = True
+    (wrong_type / "metadata.json").write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(TypeError, match="must be an integer"):
+        load_evaluation_pair_cache(wrong_type, identity)
 
 
 def test_pair_builders_reject_invalid_partitions(make_probe: Callable[..., ProbeLocus]) -> None:
@@ -205,11 +504,23 @@ def test_pair_target_and_prediction_gathering() -> None:
         ]
     )
     assert t.allclose(targets, expected)
+    assert t.equal(
+        gather_pair_targets_chunked(rows, pairs, chunk_size=1),
+        targets,
+    )
     latent = t.nn.functional.normalize(
         t.randn((3, 4), generator=t.Generator().manual_seed(4)), dim=1
     )
     predictions = gather_pair_predictions(latent, pairs)
     assert predictions.shape == (3,)
+    assert t.equal(
+        gather_pair_predictions_chunked(latent, pairs, chunk_size=2),
+        predictions,
+    )
+    with pytest.raises(ValueError, match="chunk size"):
+        gather_pair_targets_chunked(rows, pairs, chunk_size=0)
+    with pytest.raises(ValueError, match="chunk size"):
+        gather_pair_predictions_chunked(latent, pairs, chunk_size=0)
     with pytest.raises(ValueError, match="unit norm"):
         gather_pair_predictions(latent * 2, pairs)
 

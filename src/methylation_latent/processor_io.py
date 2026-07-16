@@ -20,6 +20,16 @@ _PROCESSOR_OUTPUT_SCHEMA_FILES = frozenset(
         "environment.txt",
     }
 )
+_SESAME_ENVIRONMENT_COMMON = frozenset(
+    {
+        "R=4.6.0",
+        "Bioconductor=3.23",
+        "sesame=1.30.1",
+        "sesameData=1.30.0",
+        "probe_filter=^cg[0-9]{8}$",
+        "beta_mask=false",
+    }
+)
 
 
 def _assert_idat_magic(path: Path) -> None:
@@ -146,6 +156,39 @@ def _load_exact_vector(path: Path, *, count: int, dtype: t.dtype) -> t.Tensor:
     return values
 
 
+def _expected_processor_files(
+    sample_ids: tuple[str, ...],
+) -> set[str]:
+    return {
+        *_PROCESSOR_OUTPUT_SCHEMA_FILES,
+        *(
+            name
+            for sample_id in sample_ids
+            for name in (
+                f"{sample_id}.beta.f64",
+                f"{sample_id}.detection_p.f64",
+                f"{sample_id}.quality_excluded.u8",
+            )
+        ),
+    }
+
+
+def _assert_processor_file_inventory(
+    directory: Path,
+    *,
+    sample_ids: tuple[str, ...],
+    processor_name: str,
+) -> None:
+    expected_files = _expected_processor_files(sample_ids)
+    observed_files = {path.name for path in directory.iterdir() if path.is_file()}
+    if observed_files != expected_files:
+        raise ValueError(
+            f"{processor_name} output file inventory differs: "
+            f"missing={sorted(expected_files - observed_files)[:10]}, "
+            f"unknown={sorted(observed_files - expected_files)[:10]}"
+        )
+
+
 def _load_binary_processor_output(
     directory: Path,
     *,
@@ -160,25 +203,11 @@ def _load_binary_processor_output(
             f"expected_hash={sha256_ordered_strings(expected_sample_ids)}, "
             f"observed_hash={sha256_ordered_strings(sample_ids)}"
         )
-    expected_files = {
-        *_PROCESSOR_OUTPUT_SCHEMA_FILES,
-        *(
-            name
-            for sample_id in sample_ids
-            for name in (
-                f"{sample_id}.beta.f64",
-                f"{sample_id}.detection_p.f64",
-                f"{sample_id}.quality_excluded.u8",
-            )
-        ),
-    }
-    observed_files = {path.name for path in directory.iterdir() if path.is_file()}
-    if observed_files != expected_files:
-        raise ValueError(
-            f"{processor_name} output file inventory differs: "
-            f"missing={sorted(expected_files - observed_files)[:10]}, "
-            f"unknown={sorted(observed_files - expected_files)[:10]}"
-        )
+    _assert_processor_file_inventory(
+        directory,
+        sample_ids=sample_ids,
+        processor_name=processor_name,
+    )
 
     probe_count = len(probe_ids)
     beta_columns = tuple(
@@ -214,6 +243,156 @@ def _load_binary_processor_output(
         beta=t.stack(beta_columns, dim=1),
         detection_p=t.stack(detection_columns, dim=1),
         quality_excluded=quality_raw.to(t.bool),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SesameThresholdSensitivityAudit:
+    """Exact streaming comparison of the 0.01 audit and 0.05 primary passes."""
+
+    probe_count: int
+    sample_count: int
+    beta_values_compared: int
+    beta_nonidentical_values: int
+    beta_maximum_absolute_difference: float
+    beta_mean_absolute_difference: float
+    probe_order_sha256: str
+    sample_order_sha256: str
+
+    def __post_init__(self) -> None:
+        if min(self.probe_count, self.sample_count, self.beta_values_compared) <= 0:
+            raise ValueError("seSAMe sensitivity audit counts must be positive")
+        if self.beta_values_compared != self.probe_count * self.sample_count:
+            raise ValueError("seSAMe sensitivity beta count differs from its matrix shape")
+        if not 0 <= self.beta_nonidentical_values <= self.beta_values_compared:
+            raise ValueError("seSAMe sensitivity nonidentity count is outside its matrix")
+        values = (
+            self.beta_maximum_absolute_difference,
+            self.beta_mean_absolute_difference,
+        )
+        if any(not bool(t.isfinite(t.tensor(value)).item()) or value < 0.0 for value in values):
+            raise ValueError("seSAMe sensitivity differences must be finite and non-negative")
+        if len(self.probe_order_sha256) != 64 or len(self.sample_order_sha256) != 64:
+            raise ValueError("seSAMe sensitivity axis fingerprints must be SHA-256 values")
+
+
+def _assert_sesame_environment(
+    directory: Path,
+    *,
+    threshold: str,
+    sample_count: int,
+    probe_count: int,
+) -> None:
+    lines = tuple((directory / "environment.txt").read_text(encoding="utf-8").splitlines())
+    expected = {
+        *_SESAME_ENVIRONMENT_COMMON,
+        f"pipeline=QCD-pOOBAH@{threshold}-B",
+        f"samples={sample_count}",
+        f"probes={probe_count}",
+    }
+    if len(lines) != len(expected) or set(lines) != expected:
+        raise ValueError(f"seSAMe environment differs for threshold {threshold}: observed={lines}")
+
+
+@beartype
+def compare_sesame_threshold_outputs(
+    audit_directory: Path,
+    primary_directory: Path,
+    *,
+    expected_sample_ids: tuple[str, ...],
+) -> SesameThresholdSensitivityAudit:
+    """Compare complete processor passes without holding both matrices in memory."""
+
+    audit_probe_ids = _read_nonempty_unique_lines(
+        audit_directory / "probe_ids.txt",
+        "0.01 seSAMe probe IDs",
+    )
+    primary_probe_ids = _read_nonempty_unique_lines(
+        primary_directory / "probe_ids.txt",
+        "0.05 seSAMe probe IDs",
+    )
+    if audit_probe_ids != primary_probe_ids:
+        raise ValueError("0.01 and 0.05 seSAMe probe axes differ")
+    for directory, name in (
+        (audit_directory, "0.01 seSAMe"),
+        (primary_directory, "0.05 seSAMe"),
+    ):
+        sample_ids = _read_nonempty_unique_lines(
+            directory / "sample_order.txt",
+            f"{name} sample order",
+        )
+        if sample_ids != expected_sample_ids:
+            raise ValueError(f"{name} sample order differs from the raw cohort")
+        _assert_processor_file_inventory(
+            directory,
+            sample_ids=sample_ids,
+            processor_name=name,
+        )
+    probe_count = len(primary_probe_ids)
+    _assert_sesame_environment(
+        audit_directory,
+        threshold="0.01",
+        sample_count=len(expected_sample_ids),
+        probe_count=probe_count,
+    )
+    _assert_sesame_environment(
+        primary_directory,
+        threshold="0.05",
+        sample_count=len(expected_sample_ids),
+        probe_count=probe_count,
+    )
+    beta_nonidentical = 0
+    beta_maximum = 0.0
+    beta_absolute_sum = 0.0
+    for sample_id in expected_sample_ids:
+        audit_detection = _load_exact_vector(
+            audit_directory / f"{sample_id}.detection_p.f64",
+            count=probe_count,
+            dtype=t.float64,
+        )
+        primary_detection = _load_exact_vector(
+            primary_directory / f"{sample_id}.detection_p.f64",
+            count=probe_count,
+            dtype=t.float64,
+        )
+        if not t.equal(audit_detection, primary_detection):
+            raise ValueError("seSAMe pOOBAH threshold changed the raw detection-p values")
+        audit_quality = _load_exact_vector(
+            audit_directory / f"{sample_id}.quality_excluded.u8",
+            count=probe_count,
+            dtype=t.uint8,
+        )
+        primary_quality = _load_exact_vector(
+            primary_directory / f"{sample_id}.quality_excluded.u8",
+            count=probe_count,
+            dtype=t.uint8,
+        )
+        if not t.equal(audit_quality, primary_quality):
+            raise ValueError("seSAMe pOOBAH threshold changed the pre-pOOBAH quality mask")
+        audit_beta = _load_exact_vector(
+            audit_directory / f"{sample_id}.beta.f64",
+            count=probe_count,
+            dtype=t.float64,
+        )
+        primary_beta = _load_exact_vector(
+            primary_directory / f"{sample_id}.beta.f64",
+            count=probe_count,
+            dtype=t.float64,
+        )
+        absolute_difference = (audit_beta - primary_beta).abs()
+        beta_nonidentical += int((absolute_difference != 0.0).sum().item())
+        beta_maximum = max(beta_maximum, float(absolute_difference.max().item()))
+        beta_absolute_sum += float(absolute_difference.sum(dtype=t.float64).item())
+    beta_values = probe_count * len(expected_sample_ids)
+    return SesameThresholdSensitivityAudit(
+        probe_count=probe_count,
+        sample_count=len(expected_sample_ids),
+        beta_values_compared=beta_values,
+        beta_nonidentical_values=beta_nonidentical,
+        beta_maximum_absolute_difference=beta_maximum,
+        beta_mean_absolute_difference=beta_absolute_sum / beta_values,
+        probe_order_sha256=sha256_ordered_strings(primary_probe_ids),
+        sample_order_sha256=sha256_ordered_strings(expected_sample_ids),
     )
 
 
