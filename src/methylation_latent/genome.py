@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import secrets
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from io import BufferedReader
@@ -108,6 +110,109 @@ def parse_fasta_index(path: Path) -> dict[str, FastaIndexEntry]:
     return records
 
 
+@dataclass(slots=True)
+class _FastaIndexAccumulator:
+    name: str
+    offset: int
+    line_bases: int | None = None
+    line_width: int | None = None
+    length: int = 0
+    pending_bases: int | None = None
+    pending_width: int | None = None
+
+    def add_sequence_line(self, raw_line: bytes) -> None:
+        sequence = raw_line.rstrip(b"\r\n")
+        if not sequence or len(sequence) + raw_line.count(b"\r") + raw_line.count(b"\n") != len(
+            raw_line
+        ):
+            raise ValueError(f"FASTA contig {self.name!r} contains blank or malformed lines")
+        if any(value in b" \t" for value in sequence):
+            raise ValueError(f"FASTA contig {self.name!r} contains whitespace within sequence")
+        if self.pending_bases is not None:
+            if self.line_bases is None or self.line_width is None:
+                self.line_bases = self.pending_bases
+                self.line_width = self.pending_width
+            if self.pending_bases != self.line_bases or self.pending_width != self.line_width:
+                raise ValueError(
+                    f"FASTA contig {self.name!r} has a short or irregular non-final line"
+                )
+            self.length += self.pending_bases
+        self.pending_bases = len(sequence)
+        self.pending_width = len(raw_line)
+
+    def finish(self) -> FastaIndexEntry:
+        if self.pending_bases is None or self.pending_width is None:
+            raise ValueError(f"FASTA contig {self.name!r} has no sequence")
+        if self.line_bases is None or self.line_width is None:
+            self.line_bases = self.pending_bases
+            self.line_width = self.pending_width
+        if self.pending_bases > self.line_bases:
+            raise ValueError(f"FASTA contig {self.name!r} final line exceeds fixed line width")
+        self.length += self.pending_bases
+        return FastaIndexEntry(
+            name=self.name,
+            length=self.length,
+            offset=self.offset,
+            line_bases=self.line_bases,
+            line_width=self.line_width,
+        )
+
+
+def build_fasta_index_exclusive(fasta_path: Path, index_path: Path | None = None) -> Path:
+    """Build a standard `.fai` after validating a fixed-width uncompressed FASTA."""
+
+    destination = index_path or Path(f"{fasta_path}.fai")
+    if destination.exists():
+        raise FileExistsError(destination)
+    if not fasta_path.is_file() or fasta_path.stat().st_size == 0:
+        raise ValueError("FASTA input must be a non-empty regular file")
+
+    records: list[FastaIndexEntry] = []
+    seen_names: set[str] = set()
+    current: _FastaIndexAccumulator | None = None
+    with fasta_path.open(mode="rb") as handle:
+        while raw_line := handle.readline():
+            if raw_line.startswith(b">"):
+                if current is not None:
+                    records.append(current.finish())
+                header = raw_line[1:].rstrip(b"\r\n")
+                if not header:
+                    raise ValueError("FASTA contains an empty contig header")
+                name_bytes = header.split(maxsplit=1)[0]
+                try:
+                    name = name_bytes.decode("ascii")
+                except UnicodeDecodeError as error:
+                    raise ValueError("FASTA contig name is not ASCII") from error
+                if not name or name in seen_names:
+                    raise ValueError(f"FASTA contains an empty or duplicate contig: {name!r}")
+                seen_names.add(name)
+                current = _FastaIndexAccumulator(name=name, offset=handle.tell())
+            else:
+                if current is None:
+                    raise ValueError("FASTA sequence appears before its first header")
+                current.add_sequence_line(raw_line)
+    if current is not None:
+        records.append(current.finish())
+    if not records:
+        raise ValueError("FASTA contains no contigs")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(16)}.tmp")
+    with temporary.open(mode="x", encoding="ascii", newline="") as handle:
+        handle.writelines(
+            f"{record.name}\t{record.length}\t{record.offset}\t"
+            f"{record.line_bases}\t{record.line_width}\n"
+            for record in records
+        )
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.link(temporary, destination)
+    temporary.unlink()
+    if parse_fasta_index(destination) != {record.name: record for record in records}:
+        raise RuntimeError("published FASTA index differs from its validated records")
+    return destination
+
+
 class IndexedFasta:
     """Minimal read-only random access for an uncompressed indexed FASTA."""
 
@@ -202,19 +307,48 @@ class ReferenceWindowAudit:
             raise ValueError("eligible probe order must carry a SHA-256 fingerprint")
 
 
+@dataclass(frozen=True, slots=True)
+class ReferenceWindowExclusion:
+    """A locus excluded only because the maximum plus-strand window is unusable."""
+
+    probe: ProbeLocus
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.reason not in {"boundary", "non_acgt"}:
+            raise ValueError(f"unknown reference-window exclusion reason: {self.reason}")
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceWindowFilterResult:
+    """Eligible ordered loci, explicit exclusions, and their exhaustive audit."""
+
+    eligible: NonEmptyProbeSet
+    exclusions: tuple[ReferenceWindowExclusion, ...]
+    audit: ReferenceWindowAudit
+
+    def __post_init__(self) -> None:
+        if len(self.eligible) + len(self.exclusions) != self.audit.input_probes:
+            raise ValueError("reference filter does not partition its audited probe universe")
+        reasons = tuple(exclusion.reason for exclusion in self.exclusions)
+        if reasons.count("boundary") != self.audit.boundary_exclusions:
+            raise ValueError("reference boundary exclusion ledger/count differ")
+        if reasons.count("non_acgt") != self.audit.non_acgt_exclusions:
+            raise ValueError("reference non-ACGT exclusion ledger/count differ")
+
+
 @beartype
-def audit_reference_windows(
+def filter_reference_windows(
     reference: IndexedFasta,
     probes: NonEmptyProbeSet,
     maximum_window_size: WindowSize,
-) -> ReferenceWindowAudit:
-    """Verify every MAPINFO CpG, then classify full plus-strand maximum windows."""
+) -> ReferenceWindowFilterResult:
+    """Verify every MAPINFO CpG and retain only full A/C/G/T maximum windows."""
 
     width = int(maximum_window_size)
     half = width // 2
-    boundary_exclusions = 0
-    non_acgt_exclusions = 0
-    eligible_probe_ids: list[str] = []
+    exclusions: list[ReferenceWindowExclusion] = []
+    eligible: list[ProbeLocus] = []
     for probe in probes.probes:
         chromosome = f"chr{int(probe.chromosome)}"
         chromosome_length = reference.contig_length(chromosome)
@@ -230,23 +364,44 @@ def audit_reference_windows(
         start = cytosine_zero - half
         end = start + width
         if start < 0 or end > chromosome_length:
-            boundary_exclusions += 1
+            exclusions.append(ReferenceWindowExclusion(probe, "boundary"))
             continue
         sequence = reference.read_interval(GenomicInterval(chromosome, start, end))
         if sequence[half : half + 2] != "CG":
             raise RuntimeError("maximum-window extraction disagrees with coordinate CpG audit")
         if set(sequence.encode("ascii")) - _VALID_BASE_BYTES:
-            non_acgt_exclusions += 1
+            exclusions.append(ReferenceWindowExclusion(probe, "non_acgt"))
             continue
-        eligible_probe_ids.append(str(probe.probe_id))
-    return ReferenceWindowAudit(
+        eligible.append(probe)
+    eligible_probes = NonEmptyProbeSet(tuple(eligible))
+    boundary_exclusions = sum(exclusion.reason == "boundary" for exclusion in exclusions)
+    non_acgt_exclusions = sum(exclusion.reason == "non_acgt" for exclusion in exclusions)
+    audit = ReferenceWindowAudit(
         input_probes=len(probes),
         coordinate_cpgs_verified=len(probes),
-        eligible_probes=len(eligible_probe_ids),
+        eligible_probes=len(eligible_probes),
         boundary_exclusions=boundary_exclusions,
         non_acgt_exclusions=non_acgt_exclusions,
-        eligible_probe_order_sha256=sha256_ordered_strings(eligible_probe_ids),
+        eligible_probe_order_sha256=sha256_ordered_strings(
+            str(probe.probe_id) for probe in eligible_probes.probes
+        ),
     )
+    return ReferenceWindowFilterResult(
+        eligible=eligible_probes,
+        exclusions=tuple(exclusions),
+        audit=audit,
+    )
+
+
+@beartype
+def audit_reference_windows(
+    reference: IndexedFasta,
+    probes: NonEmptyProbeSet,
+    maximum_window_size: WindowSize,
+) -> ReferenceWindowAudit:
+    """Return the audit portion of the exhaustive reference-window filter."""
+
+    return filter_reference_windows(reference, probes, maximum_window_size).audit
 
 
 @beartype

@@ -24,10 +24,12 @@ from methylation_latent.genome import (
     IndexedFasta,
     assert_probe_windows,
     audit_reference_windows,
+    build_fasta_index_exclusive,
     chromosome_lengths,
     cpg_window_interval,
     encode_dna,
     extract_cpg_window,
+    filter_reference_windows,
     parse_fasta_index,
     sequence_features,
 )
@@ -94,6 +96,32 @@ def test_fasta_index_entry_and_parser_contract(tmp_path: Path) -> None:
         FastaIndexEntry("chr1", 10, 1, 10, 9)
 
 
+def test_fasta_index_builder_validates_layout_and_supports_random_access(
+    tmp_path: Path,
+) -> None:
+    fasta = tmp_path / "reference.fa"
+    fasta.write_bytes(b">chr1 description\nACGT\nTG\n>chr2\nCCGG\n")
+    index = build_fasta_index_exclusive(fasta)
+    assert index.read_text(encoding="ascii").splitlines() == [
+        "chr1\t6\t18\t4\t5",
+        "chr2\t4\t32\t4\t5",
+    ]
+    with IndexedFasta(fasta, index) as reference:
+        assert reference.read_interval(GenomicInterval("chr1", 1, 6)) == "CGTTG"
+        assert reference.read_interval(GenomicInterval("chr2", 0, 4)) == "CCGG"
+    with pytest.raises(FileExistsError):
+        build_fasta_index_exclusive(fasta)
+
+    irregular = tmp_path / "irregular.fa"
+    irregular.write_bytes(b">chr1\nAC\nACGT\nA\n")
+    with pytest.raises(ValueError, match="irregular non-final"):
+        build_fasta_index_exclusive(irregular)
+    headerless = tmp_path / "headerless.fa"
+    headerless.write_bytes(b"ACGT\n")
+    with pytest.raises(ValueError, match="before its first header"):
+        build_fasta_index_exclusive(headerless)
+
+
 def test_plus_strand_cpg_extraction_ignores_assay_strand(
     tmp_path: Path,
     make_probe: Callable[..., ProbeLocus],
@@ -112,6 +140,35 @@ def test_plus_strand_cpg_extraction_ignores_assay_strand(
         assert reference.contig_length("chr1") == len(sequence)
         assert reference.read_interval(GenomicInterval("chr1", 49, 51)) == "CG"
     assert extracted == sequence[39:59]
+
+
+def test_reference_filter_returns_explicit_boundary_and_non_acgt_ledgers(
+    tmp_path: Path,
+    make_probe: Callable[..., ProbeLocus],
+) -> None:
+    sequence = "CG" + "A" * 18 + "CG" + "N" + "A" * 17 + "CG" + "A" * 20
+    fasta = tmp_path / "reference.fa"
+    _write_single_line_fasta(fasta, "chr1", sequence)
+    probes = NonEmptyProbeSet(
+        (
+            make_probe(1, position=1),
+            make_probe(2, position=21),
+            make_probe(3, position=41),
+        )
+    )
+    with IndexedFasta(fasta) as reference:
+        result = filter_reference_windows(
+            reference,
+            probes,
+            parse_window_size(10),
+        )
+    assert tuple(exclusion.reason for exclusion in result.exclusions) == (
+        "boundary",
+        "non_acgt",
+    )
+    assert tuple(probe.probe_id for probe in result.eligible.probes) == (probes.probes[2].probe_id,)
+    assert result.audit.boundary_exclusions == 1
+    assert result.audit.non_acgt_exclusions == 1
 
 
 def test_fasta_access_fails_loudly_on_coordinate_and_sequence_errors(

@@ -37,6 +37,8 @@ from methylation_latent.training import (
     TrainingConfig,
     TrainingMode,
     TrainingStep,
+    ValidationData,
+    ValidationStep,
     _cuda_fork_devices,
     train_latent_metric,
 )
@@ -222,13 +224,24 @@ def test_optimizer_has_zero_weight_decay() -> None:
 
 def _tiny_training_inputs(
     make_probe: Callable[..., ProbeLocus],
-) -> tuple[NonEmptyProbeSet, EmbeddingMatrix, TargetGeometry]:
-    probes = _probe_universe(make_probe, count=6)
+) -> tuple[NonEmptyProbeSet, EmbeddingMatrix, TargetGeometry, ValidationData]:
+    probes = _probe_universe(make_probe, count=8)
     generator = t.Generator().manual_seed(8)
-    embeddings = EmbeddingMatrix(t.randn((6, 256), generator=generator, dtype=t.float16))
-    beta = t.rand((6, 5), generator=generator, dtype=t.float64)
+    embedding_values = t.randn((8, 256), generator=generator, dtype=t.float16)
+    beta = t.rand((8, 5), generator=generator, dtype=t.float64)
     age = t.linspace(20, 80, 5, dtype=t.float64)
-    return probes, embeddings, build_target_geometry(beta, age)
+    training = NonEmptyProbeSet(probes.probes[:6])
+    validation = NonEmptyProbeSet(probes.probes[6:])
+    return (
+        training,
+        EmbeddingMatrix(embedding_values[:6]),
+        build_target_geometry(beta[:6], age),
+        ValidationData(
+            probes=validation,
+            embeddings=EmbeddingMatrix(embedding_values[6:]),
+            targets=build_target_geometry(beta[6:], age),
+        ),
+    )
 
 
 @pytest.mark.parametrize("mode", [TrainingMode.AGE_ONLY, TrainingMode.FULL])
@@ -236,7 +249,7 @@ def test_fixed_step_training_consumes_cached_embeddings(
     mode: TrainingMode,
     make_probe: Callable[..., ProbeLocus],
 ) -> None:
-    probes, embeddings, targets = _tiny_training_inputs(make_probe)
+    probes, embeddings, targets, validation = _tiny_training_inputs(make_probe)
     config = TrainingConfig(
         mode=mode,
         latent_dimension=parse_latent_dimension(4),
@@ -244,14 +257,28 @@ def test_fixed_step_training_consumes_cached_embeddings(
         batch_size=parse_positive_int(4),
         neighbourhood_width=parse_positive_int(300),
         steps=parse_positive_int(2),
+        validation_interval=parse_positive_int(1),
+        validation_pair_chunk_size=parse_positive_int(2),
         learning_rate=1e-3,
         seed=91,
         device="cpu",
     )
-    trained = train_latent_metric(probes, embeddings, targets, config=config)
+    trained = train_latent_metric(
+        probes,
+        embeddings,
+        targets,
+        validation,
+        config=config,
+    )
     assert len(trained.history) == 2
+    assert tuple(record.step for record in trained.validation_history) == (0, 1, 2)
+    assert trained.selected_step in {0, 1, 2}
     assert all(
         (step.pair_mse is None) == (mode == TrainingMode.AGE_ONLY) for step in trained.history
+    )
+    assert all(
+        (step.pair_mse is None) == (mode == TrainingMode.AGE_ONLY)
+        for step in trained.validation_history
     )
     assert all(parameter.dtype == t.float32 for parameter in trained.model.parameters())
 
@@ -267,6 +294,8 @@ def test_training_configs_and_records_reject_invalid_states(
             parse_positive_int(2),
             parse_positive_int(10),
             parse_positive_int(1),
+            parse_positive_int(1),
+            parse_positive_int(2),
             1e-3,
             1,
             "cpu",
@@ -279,22 +308,58 @@ def test_training_configs_and_records_reject_invalid_states(
             parse_positive_int(2),
             parse_positive_int(10),
             parse_positive_int(1),
+            parse_positive_int(1),
+            parse_positive_int(2),
             float("nan"),
             1,
             "cpu",
         )
+    with pytest.raises(ValueError, match="validation interval"):
+        TrainingConfig(
+            TrainingMode.FULL,
+            parse_latent_dimension(2),
+            parse_non_negative_weight(1),
+            parse_positive_int(2),
+            parse_positive_int(10),
+            parse_positive_int(1),
+            parse_positive_int(2),
+            parse_positive_int(2),
+            1e-3,
+            1,
+            "cpu",
+        )
     with pytest.raises(ValueError, match="losses"):
-        TrainingStep(0, -1.0, 0.0, None)
+        TrainingStep(1, -1.0, 0.0, None)
     with pytest.raises(ValueError, match="pair loss"):
-        TrainingStep(0, 1.0, 0.0, -1.0)
+        TrainingStep(1, 1.0, 0.0, -1.0)
+    with pytest.raises(ValueError, match="positive"):
+        TrainingStep(0, 1.0, 0.0, None)
+    with pytest.raises(ValueError, match="validation losses"):
+        ValidationStep(0, -1.0, 0.0, 0.0, None)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        ValidationStep(-1, 0.0, 0.0, 0.0, None)
+    with pytest.raises(ValueError, match="pair loss"):
+        ValidationStep(0, 0.0, 0.0, 0.0, -1.0)
     model = LatentMetric(embedding_dimension=2, latent_dimension=parse_latent_dimension(2))
     with pytest.raises(ValueError, match="non-empty"):
-        TrainedMetric(model, ())
+        TrainedMetric(model, (), (), 0)
+    training_step = TrainingStep(1, 0.0, 0.0, None)
+    validation_step_zero = ValidationStep(0, 0.0, 0.0, 0.0, None)
+    validation_step_one = ValidationStep(1, 0.0, 0.0, 0.0, None)
+    with pytest.raises(ValueError, match="unique and increasing"):
+        TrainedMetric(
+            model,
+            (training_step,),
+            (validation_step_one, validation_step_zero),
+            0,
+        )
+    with pytest.raises(ValueError, match="absent"):
+        TrainedMetric(model, (training_step,), (validation_step_zero,), 1)
     with pytest.raises(ValueError, match="floating scalar"):
         ObjectiveTerms(t.ones(1), None, t.tensor(0.0))
     with pytest.raises(ValueError, match="pair_mse"):
         ObjectiveTerms(t.tensor(1.0), t.ones(1), t.tensor(0.0))
-    probes, embeddings, targets = _tiny_training_inputs(make_probe)
+    probes, embeddings, targets, validation = _tiny_training_inputs(make_probe)
     short_probes = NonEmptyProbeSet(probes.probes[:-1])
     config = TrainingConfig(
         TrainingMode.FULL,
@@ -303,18 +368,86 @@ def test_training_configs_and_records_reject_invalid_states(
         parse_positive_int(4),
         parse_positive_int(100),
         parse_positive_int(1),
+        parse_positive_int(1),
+        parse_positive_int(2),
         1e-3,
         1,
         "cpu",
     )
     with pytest.raises(ValueError, match="align"):
-        train_latent_metric(short_probes, embeddings, targets, config=config)
+        train_latent_metric(
+            short_probes,
+            embeddings,
+            targets,
+            validation,
+            config=config,
+        )
     too_large_batch = replace(config, batch_size=parse_positive_int(7))
     with pytest.raises(ValueError, match="batch size"):
-        train_latent_metric(probes, embeddings, targets, config=too_large_batch)
+        train_latent_metric(
+            probes,
+            embeddings,
+            targets,
+            validation,
+            config=too_large_batch,
+        )
     too_wide = replace(config, latent_dimension=parse_latent_dimension(5))
     with pytest.raises(ValueError, match="useful ceiling"):
-        train_latent_metric(probes, embeddings, targets, config=too_wide)
+        train_latent_metric(
+            probes,
+            embeddings,
+            targets,
+            validation,
+            config=too_wide,
+        )
+    with pytest.raises(ValueError, match="validation probe"):
+        ValidationData(
+            probes=probes,
+            embeddings=validation.embeddings,
+            targets=validation.targets,
+        )
+    overlapping_validation = replace(
+        validation,
+        probes=NonEmptyProbeSet(probes.probes[:2]),
+    )
+    with pytest.raises(ValueError, match="must be disjoint"):
+        train_latent_metric(
+            probes,
+            embeddings,
+            targets,
+            overlapping_validation,
+            config=config,
+        )
+    wrong_width_embeddings = object.__new__(EmbeddingMatrix)
+    object.__setattr__(
+        wrong_width_embeddings,
+        "tensor",
+        t.ones((2, 255), dtype=t.float16),
+    )
+    wrong_width_validation = replace(validation, embeddings=wrong_width_embeddings)
+    with pytest.raises(ValueError, match="embedding widths"):
+        train_latent_metric(
+            probes,
+            embeddings,
+            targets,
+            wrong_width_validation,
+            config=config,
+        )
+    wrong_sample_validation = replace(
+        validation,
+        targets=build_target_geometry(
+            t.rand((2, 6), dtype=t.float64),
+            t.linspace(20, 70, 6, dtype=t.float64),
+        ),
+    )
+    with pytest.raises(ValueError, match="sample axes"):
+        train_latent_metric(
+            probes,
+            embeddings,
+            targets,
+            wrong_sample_validation,
+            config=config,
+        )
 
 
 def test_cuda_device_selection_and_unavailable_training_fail_loudly(
@@ -323,7 +456,7 @@ def test_cuda_device_selection_and_unavailable_training_fail_loudly(
 ) -> None:
     assert _cuda_fork_devices(t.device("cpu")) == []
     assert _cuda_fork_devices(t.device("cuda:2")) == [2]
-    probes, embeddings, targets = _tiny_training_inputs(make_probe)
+    probes, embeddings, targets, validation = _tiny_training_inputs(make_probe)
     config = TrainingConfig(
         TrainingMode.FULL,
         parse_latent_dimension(4),
@@ -331,10 +464,18 @@ def test_cuda_device_selection_and_unavailable_training_fail_loudly(
         parse_positive_int(4),
         parse_positive_int(100),
         parse_positive_int(1),
+        parse_positive_int(1),
+        parse_positive_int(2),
         1e-3,
         1,
         "cuda",
     )
     monkeypatch.setattr(t.cuda, "is_available", lambda: False)
     with pytest.raises(ValueError, match="CUDA.*unavailable"):
-        train_latent_metric(probes, embeddings, targets, config=config)
+        train_latent_metric(
+            probes,
+            embeddings,
+            targets,
+            validation,
+            config=config,
+        )

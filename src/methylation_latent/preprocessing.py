@@ -6,12 +6,13 @@ from dataclasses import dataclass
 
 import torch as t
 from beartype import beartype
-from jaxtyping import Float64, jaxtyped
+from jaxtyping import Bool, Float64, jaxtyped
 
 from methylation_latent.domain import Fraction
 
 BetaMatrix = Float64[t.Tensor, "probes samples"]
 DetectionPMatrix = Float64[t.Tensor, "probes samples"]
+QualityExclusionMatrix = Bool[t.Tensor, "probes samples"]
 PARITY_ARRAY_COUNT = 12
 PARITY_DETECTION_AGREEMENT_MINIMUM = 0.999
 PARITY_PER_ARRAY_DETECTION_AGREEMENT_MINIMUM = 0.995
@@ -91,6 +92,8 @@ def assert_processor_parity(
     sesame_beta: BetaMatrix,
     methylprep_detection_p: DetectionPMatrix,
     sesame_detection_p: DetectionPMatrix,
+    methylprep_quality_excluded: QualityExclusionMatrix,
+    sesame_quality_excluded: QualityExclusionMatrix,
     *,
     detection_threshold: Fraction,
     maximum_sample_failure_fraction: Fraction,
@@ -108,11 +111,28 @@ def assert_processor_parity(
     shapes = {tuple(values.shape) for values, _ in matrices}
     if len(shapes) != 1:
         raise ValueError("processor parity matrices must have identical probe/sample axes")
+    expected_shape = methylprep_beta.shape
+    quality_matrices = (
+        (methylprep_quality_excluded, "methylprep quality exclusions"),
+        (sesame_quality_excluded, "seSAMe quality exclusions"),
+    )
+    for values, name in quality_matrices:
+        if values.dtype != t.bool or values.shape != expected_shape:
+            raise ValueError(f"{name} must be a probe/sample-aligned boolean matrix")
     if methylprep_beta.shape[1] != PARITY_ARRAY_COUNT:
         raise ValueError(f"processor parity requires exactly {PARITY_ARRAY_COUNT} arrays")
 
-    methylprep_passed = methylprep_detection_p < float(detection_threshold)
-    sesame_passed = sesame_detection_p < float(detection_threshold)
+    methylprep_quality_retained = ~methylprep_quality_excluded.any(dim=1)
+    sesame_quality_retained = ~sesame_quality_excluded.any(dim=1)
+    if not t.equal(methylprep_quality_retained, sesame_quality_retained):
+        raise ValueError("methylprep and seSAMe quality-mask complete-probe sets differ")
+    quality_indices = t.nonzero(methylprep_quality_retained).flatten()
+    if quality_indices.numel() < 2:
+        raise ValueError("processor parity quality masks retained fewer than two probes")
+    methylprep_passed = methylprep_detection_p.index_select(0, quality_indices) < float(
+        detection_threshold
+    )
+    sesame_passed = sesame_detection_p.index_select(0, quality_indices) < float(detection_threshold)
     agreement = methylprep_passed == sesame_passed
     overall_agreement = float(agreement.to(t.float64).mean().item())
     per_array_agreement = agreement.to(t.float64).mean(dim=0)
@@ -130,7 +150,10 @@ def assert_processor_parity(
     sesame_probes = sesame_passed.index_select(1, retained_sample_indices).all(dim=1)
     if not t.equal(methylprep_probes, sesame_probes):
         raise ValueError("methylprep and seSAMe parity complete-probe sets differ")
-    retained_probe_indices = t.nonzero(methylprep_probes).flatten()
+    retained_probe_indices = quality_indices.index_select(
+        0,
+        t.nonzero(methylprep_probes).flatten(),
+    )
     if retained_probe_indices.numel() < 2:
         raise ValueError("processor parity retained fewer than two probes")
 

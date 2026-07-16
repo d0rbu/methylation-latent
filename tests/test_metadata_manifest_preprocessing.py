@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+from array import array
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,8 @@ import torch as t
 from jaxtyping import TypeCheckError
 
 from methylation_latent import manifest as manifest_module
+from methylation_latent import metadata as metadata_module
+from methylation_latent.artifacts import sha256_file
 from methylation_latent.domain import (
     GenomicContext,
     NonEmptyProbeSet,
@@ -21,6 +24,14 @@ from methylation_latent.domain import (
     parse_positive_int,
     parse_probe_id,
     parse_sentrix_identity,
+)
+from methylation_latent.idat import (
+    CompressedIdat,
+    CompressedIdatInventory,
+    audit_gse87571_compressed_idats,
+    load_compressed_idat_inventory,
+    materialize_idats,
+    save_compressed_idat_inventory_exclusive,
 )
 from methylation_latent.manifest import (
     ManifestExclusionReason,
@@ -34,6 +45,8 @@ from methylation_latent.manifest import (
 )
 from methylation_latent.metadata import (
     Gender,
+    Gse87571RawSample,
+    Gse87571RawSampleSet,
     OrderedSampleSet,
     SampleMetadata,
     SeriesSample,
@@ -41,7 +54,10 @@ from methylation_latent.metadata import (
     assert_gzip_integrity,
     audit_idat_inventory,
     join_sample_key,
+    parse_gse87571_filelist,
+    parse_gse87571_series_metadata,
     parse_series_matrix_metadata,
+    select_gse87571_parity_sample_set,
     select_parity_sample_set,
 )
 from methylation_latent.preprocessing import (
@@ -49,6 +65,15 @@ from methylation_latent.preprocessing import (
     _validate_probability_matrix,
     apply_detection_qc,
     assert_processor_parity,
+)
+from methylation_latent.processor_io import (
+    ProcessorOutput,
+    align_processor_output_to_probe_order,
+    load_methylprep_output,
+    load_sesame_output,
+    select_processor_output_probes,
+    write_methylprep_sample_sheet_exclusive,
+    write_sesame_sample_list_exclusive,
 )
 
 
@@ -79,6 +104,39 @@ def _series_fixture(path: Path) -> None:
     _write_gzip(path, _series_text())
 
 
+def _gse87571_series_text() -> str:
+    green = (
+        "ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM1nnn/GSM1001/suppl/"
+        "GSM1001_5815284001_R01C01_Grn.idat.gz"
+    )
+    red = (
+        "ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM1nnn/GSM1001/suppl/"
+        "GSM1001_5815284001_R01C01_Red.idat.gz"
+    )
+    green_missing = (
+        "ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM1nnn/GSM1002/suppl/"
+        "GSM1002_5815284002_R02C01_Grn.idat.gz"
+    )
+    red_missing = (
+        "ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM1nnn/GSM1002/suppl/"
+        "GSM1002_5815284002_R02C01_Red.idat.gz"
+    )
+    return "".join(
+        (
+            '!Sample_title\t"X1 genomic DNA from whole blood"\t"X2 genomic DNA from whole blood"\n',
+            '!Sample_geo_accession\t"GSM1001"\t"GSM1002"\n',
+            '!Sample_source_name_ch1\t"whole blood"\t"whole blood"\n',
+            '!Sample_characteristics_ch1\t"gender: Female"\t"gender: NA"\n',
+            '!Sample_characteristics_ch1\t"age: 67"\t"age: NA"\n',
+            '!Sample_characteristics_ch1\t"tissue: whole blood"\t"tissue: whole blood"\n',
+            '!Sample_characteristics_ch1\t"disease state: normal"\t"disease state: normal"\n',
+            f'!Sample_supplementary_file\t"{green}"\t"{green_missing}"\n',
+            f'!Sample_supplementary_file\t"{red}"\t"{red_missing}"\n',
+            "!series_matrix_table_begin\n",
+        )
+    )
+
+
 def test_series_metadata_and_sample_key_join_are_explicit(tmp_path: Path) -> None:
     series_path = tmp_path / "series.txt.gz"
     _series_fixture(series_path)
@@ -96,6 +154,157 @@ def test_series_metadata_and_sample_key_join_are_explicit(tmp_path: Path) -> Non
     assert joined.samples[0].gsm_accession == "GSM1"
     assert joined.samples[1].sentrix_identity == "5815284001_R02C01"
     assert len(joined.order_sha256) == 64
+
+
+def test_gse87571_parser_separates_raw_and_age_eligible_cohorts(tmp_path: Path) -> None:
+    path = tmp_path / "series.txt.gz"
+    _write_gzip(path, _gse87571_series_text())
+    samples = parse_gse87571_series_metadata(
+        path,
+        expected_sample_count=2,
+        expected_age_eligible_count=1,
+    )
+    assert len(samples) == 2
+    assert len(samples.age_eligible) == 1
+    assert samples.samples[0].sentrix_identity == "5815284001_R01C01"
+    assert samples.samples[1].age is None
+    assert samples.samples[1].gender is None
+    assert samples.age_eligible.ages.dtype == t.float64
+    assert samples.age_eligible.ages.tolist() == [67.0]
+    assert len(samples.source_url_sha256) == 64
+    assert len(samples.age_eligible.order_sha256) == 64
+
+
+@pytest.mark.parametrize(
+    ("transform", "message"),
+    [
+        (
+            lambda text: text.replace("X1 genomic DNA from whole blood", "subject 1"),
+            "title",
+        ),
+        (
+            lambda text: text.replace(
+                "GSM1001_5815284001_R01C01_Red",
+                "GSM1001_5815284009_R01C01_Red",
+            ),
+            "disagree",
+        ),
+        (lambda text: text.replace("gender: Female", "gender: Unknown"), "gender"),
+        (lambda text: text.replace("disease state: normal", "disease state: case", 1), "disease"),
+        (
+            lambda text: text.replace(
+                '!Sample_source_name_ch1\t"whole blood"',
+                '!Sample_source_name_ch1\t"saliva"',
+            ),
+            "source-name",
+        ),
+        (
+            lambda text: text.replace(
+                "!series_matrix_table_begin\n",
+                '!Sample_supplementary_file\t"x"\t"y"\n!series_matrix_table_begin\n',
+            ),
+            "exactly two",
+        ),
+    ],
+)
+def test_gse87571_parser_rejects_identity_and_metadata_drift(
+    tmp_path: Path,
+    transform: Callable[[str], str],
+    message: str,
+) -> None:
+    path = tmp_path / "series.txt.gz"
+    _write_gzip(path, transform(_gse87571_series_text()))
+    with pytest.raises(ValueError, match=message):
+        parse_gse87571_series_metadata(
+            path,
+            expected_sample_count=2,
+            expected_age_eligible_count=1,
+        )
+
+
+def _gse87571_parity_universe() -> Gse87571RawSampleSet:
+    samples: list[Gse87571RawSample] = []
+    index = 0
+    for row in range(1, 7):
+        for column in range(1, 3):
+            for replicate in range(2):
+                index += 1
+                gsm = f"GSM{index}"
+                sentrix = f"{5_800_000_000 + replicate * 100 + index:010d}_R{row:02d}C{column:02d}"
+                base = f"ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM0nnn/{gsm}/suppl/{gsm}_{sentrix}"
+                samples.append(
+                    Gse87571RawSample(
+                        gsm_accession=parse_gsm_accession(gsm),
+                        subject_id=parse_positive_int(index),
+                        sentrix_identity=parse_sentrix_identity(sentrix),
+                        age=parse_age_years(20 + replicate),
+                        gender=Gender.FEMALE,
+                        tissue="whole blood",
+                        disease_state="normal",
+                        green_url=f"{base}_Grn.idat.gz",
+                        red_url=f"{base}_Red.idat.gz",
+                    )
+                )
+    return Gse87571RawSampleSet(tuple(samples))
+
+
+def test_gse87571_parity_subset_is_target_blind_and_position_complete() -> None:
+    samples = _gse87571_parity_universe()
+    selected = select_gse87571_parity_sample_set(samples, expected_count=12, seed=550319)
+    repeated = select_gse87571_parity_sample_set(samples, expected_count=12, seed=550319)
+    assert selected == repeated
+    assert len(selected) == 12
+    assert {str(sample.sentrix_identity).split("_")[1] for sample in selected.samples} == {
+        f"R{row:02d}C{column:02d}" for row in range(1, 7) for column in range(1, 3)
+    }
+    changed = Gse87571RawSampleSet(
+        tuple(replace(sample, age=parse_age_years(99)) for sample in samples.samples)
+    )
+    changed_selected = select_gse87571_parity_sample_set(
+        changed,
+        expected_count=12,
+        seed=550319,
+    )
+    assert tuple(sample.sentrix_identity for sample in selected.samples) == tuple(
+        sample.sentrix_identity for sample in changed_selected.samples
+    )
+    with pytest.raises(ValueError, match="exactly 12"):
+        select_gse87571_parity_sample_set(samples, expected_count=11, seed=1)
+    with pytest.raises(ValueError, match="12 Sentrix positions"):
+        select_gse87571_parity_sample_set(
+            Gse87571RawSampleSet(samples.samples[:-2]),
+            expected_count=12,
+            seed=1,
+        )
+
+
+def test_gse87571_filelist_is_byte_pinned_and_exactly_partitioned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = [
+        "#Archive/File\tName\tTime\tSize\tType\n",
+        "Archive\tGSE87571_RAW.tar\ttime\t100\tTAR\n",
+        "File\tmanifest-a.gz\ttime\t10\tXLSX\n",
+        "File\tmanifest-b.gz\ttime\t10\tTXT\n",
+        "File\tmanifest-c.gz\ttime\t10\tCSV\n",
+        "File\tmanifest-d.gz\ttime\t10\tBPM\n",
+    ]
+    records.extend(
+        f"File\tGSM{index}_{channel}.idat.gz\ttime\t10\tIDAT\n"
+        for index in range(732)
+        for channel in ("Grn", "Red")
+    )
+    path = tmp_path / "filelist.txt"
+    path.write_text("".join(records), encoding="utf-8")
+    monkeypatch.setattr(metadata_module, "GSE87571_FILELIST_SHA256", sha256_file(path))
+    parsed = parse_gse87571_filelist(path)
+    assert len(parsed.idat_files) == 1464
+    assert len(parsed.idat_sizes) == 1464
+    path.write_text(path.read_text(encoding="utf-8").replace("\tIDAT\n", "\tOTHER\n", 1))
+    monkeypatch.setattr(metadata_module, "GSE87571_FILELIST_SHA256", sha256_file(path))
+    with pytest.raises(ValueError, match="four platform|1,464"):
+        parse_gse87571_filelist(path)
 
 
 def test_series_parser_rejects_metadata_drift(tmp_path: Path) -> None:
@@ -322,6 +531,225 @@ def test_idat_inventory_requires_exact_pairs_and_magic(tmp_path: Path) -> None:
     green.write_bytes(b"NOPE-extra")
     with pytest.raises(ValueError, match="magic"):
         audit_idat_inventory(tmp_path, _sample_set())
+
+
+def test_compressed_gse87571_idats_are_crc_audited_and_exactly_materialized(
+    tmp_path: Path,
+) -> None:
+    sentrix = "5815284001_R01C01"
+    gsm = "GSM1"
+    base = f"ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM0nnn/{gsm}/suppl/{gsm}_{sentrix}"
+    samples = Gse87571RawSampleSet(
+        (
+            Gse87571RawSample(
+                gsm_accession=parse_gsm_accession(gsm),
+                subject_id=parse_positive_int(1),
+                sentrix_identity=parse_sentrix_identity(sentrix),
+                age=parse_age_years(30),
+                gender=Gender.FEMALE,
+                tissue="whole blood",
+                disease_state="normal",
+                green_url=f"{base}_Grn.idat.gz",
+                red_url=f"{base}_Red.idat.gz",
+            ),
+        )
+    )
+    compressed = tmp_path / "compressed"
+    compressed.mkdir()
+    expected_sizes: dict[str, int] = {}
+    for channel in ("Grn", "Red"):
+        path = compressed / f"{gsm}_{sentrix}_{channel}.idat.gz"
+        with gzip.open(path, mode="wb") as handle:
+            handle.write(b"IDAT-" + channel.encode("ascii") + b"-payload")
+        expected_sizes[path.name] = path.stat().st_size
+    inventory = audit_gse87571_compressed_idats(
+        compressed,
+        samples,
+        expected_sizes=expected_sizes,
+    )
+    assert len(inventory.records) == 2
+    assert len(inventory.fingerprint) == 64
+    inventory_path = tmp_path / "inventory.json"
+    save_compressed_idat_inventory_exclusive(inventory_path, inventory)
+    assert (
+        load_compressed_idat_inventory(
+            inventory_path,
+            compressed_directory=compressed,
+        )
+        == inventory
+    )
+    with pytest.raises(FileExistsError):
+        save_compressed_idat_inventory_exclusive(inventory_path, inventory)
+    materialized = tmp_path / "materialized"
+    paths = materialize_idats(inventory, samples, output_directory=materialized)
+    assert [path.name for path in paths] == [
+        f"{sentrix}_Grn.idat",
+        f"{sentrix}_Red.idat",
+    ]
+    assert all(path.read_bytes().startswith(b"IDAT") for path in paths)
+    assert materialize_idats(inventory, samples, output_directory=materialized) == paths
+    paths[0].write_bytes(b"IDAT-wrong")
+    with pytest.raises(ValueError, match="differs"):
+        materialize_idats(inventory, samples, output_directory=materialized)
+
+
+def test_compressed_gse87571_idat_audit_rejects_inventory_size_and_magic(
+    tmp_path: Path,
+) -> None:
+    samples = _gse87571_parity_universe()
+    sample = Gse87571RawSampleSet((samples.samples[0],))
+    compressed = tmp_path / "compressed"
+    compressed.mkdir()
+    names = tuple(
+        url.rsplit("/", maxsplit=1)[-1]
+        for url in (sample.samples[0].green_url, sample.samples[0].red_url)
+    )
+    for name in names:
+        with gzip.open(compressed / name, mode="wb") as handle:
+            handle.write(b"NOPE-payload")
+    sizes = {name: (compressed / name).stat().st_size for name in names}
+    with pytest.raises(ValueError, match="magic"):
+        audit_gse87571_compressed_idats(compressed, sample, expected_sizes=sizes)
+    with pytest.raises(ValueError, match="expected-size inventory"):
+        audit_gse87571_compressed_idats(
+            compressed,
+            sample,
+            expected_sizes={names[0]: sizes[names[0]]},
+        )
+    unknown = compressed / "unknown.idat.gz"
+    with gzip.open(unknown, mode="wb") as handle:
+        handle.write(b"IDAT-extra")
+    with pytest.raises(ValueError, match="directory differs"):
+        audit_gse87571_compressed_idats(compressed, sample, expected_sizes=sizes)
+
+
+def test_compressed_idat_records_reject_incomplete_or_invalid_pairs(tmp_path: Path) -> None:
+    record = CompressedIdat(
+        sentrix_identity=parse_sentrix_identity("5815284001_R01C01"),
+        channel="Grn",
+        compressed_path=tmp_path / "x.gz",
+        compressed_bytes=10,
+        compressed_sha256="0" * 64,
+        decompressed_bytes=10,
+        decompressed_sha256="1" * 64,
+    )
+    with pytest.raises(ValueError, match="complete"):
+        CompressedIdatInventory((record,))
+    with pytest.raises(ValueError, match="channel"):
+        replace(record, channel="Blue")
+
+
+def _write_array(path: Path, typecode: str, values: tuple[float | int, ...]) -> None:
+    with path.open(mode="wb") as handle:
+        array(typecode, values).tofile(handle)
+
+
+def test_sesame_sample_list_and_binary_output_preserve_exact_axes(tmp_path: Path) -> None:
+    samples = Gse87571RawSampleSet((_gse87571_parity_universe().samples[0],))
+    idat_directory = tmp_path / "idats"
+    idat_directory.mkdir()
+    sentrix = str(samples.samples[0].sentrix_identity)
+    for channel in ("Grn", "Red"):
+        (idat_directory / f"{sentrix}_{channel}.idat").write_bytes(b"IDAT-payload")
+    sample_list = tmp_path / "samples.tsv"
+    write_sesame_sample_list_exclusive(
+        sample_list,
+        samples,
+        idat_directory=idat_directory,
+    )
+    assert sample_list.read_text(encoding="utf-8").splitlines() == [
+        "sentrix_identity\tprefix",
+        f"{sentrix}\t{idat_directory / sentrix}",
+    ]
+    with pytest.raises(FileExistsError):
+        write_sesame_sample_list_exclusive(
+            sample_list,
+            samples,
+            idat_directory=idat_directory,
+        )
+
+    output = tmp_path / "sesame"
+    output.mkdir()
+    (output / "probe_ids.txt").write_text("cg00000001\ncg00000002\n", encoding="utf-8")
+    (output / "sample_order.txt").write_text(f"{sentrix}\n", encoding="utf-8")
+    (output / "environment.txt").write_text("sesame=1.30.1\n", encoding="utf-8")
+    _write_array(output / f"{sentrix}.quality_excluded.u8", "B", (0, 1))
+    _write_array(output / f"{sentrix}.beta.f64", "d", (0.1, 0.8))
+    _write_array(output / f"{sentrix}.detection_p.f64", "d", (0.001, 0.2))
+    loaded = load_sesame_output(output, expected_sample_ids=(sentrix,))
+    assert loaded.beta.shape == (2, 1)
+    assert loaded.beta.dtype == t.float64
+    assert loaded.detection_p[:, 0].tolist() == [0.001, 0.2]
+    assert loaded.quality_excluded[:, 0].tolist() == [False, True]
+    assert len(loaded.probe_order_sha256) == 64
+    assert len(loaded.sample_order_sha256) == 64
+
+
+def test_methylprep_sheet_loader_and_probe_alignment_are_exact(tmp_path: Path) -> None:
+    samples = Gse87571RawSampleSet((_gse87571_parity_universe().samples[0],))
+    idat_directory = tmp_path / "idats"
+    idat_directory.mkdir()
+    sentrix = str(samples.samples[0].sentrix_identity)
+    for channel in ("Grn", "Red"):
+        (idat_directory / f"{sentrix}_{channel}.idat").write_bytes(b"IDAT-payload")
+    sample_sheet = tmp_path / "samples.csv"
+    write_methylprep_sample_sheet_exclusive(
+        sample_sheet,
+        samples,
+        idat_directory=idat_directory,
+    )
+    sentrix_id, sentrix_position = sentrix.split("_", maxsplit=1)
+    assert sample_sheet.read_text(encoding="utf-8").splitlines() == [
+        "Sample_Name,Sentrix_ID,Sentrix_Position",
+        f"{sentrix},{sentrix_id},{sentrix_position}",
+    ]
+
+    output = tmp_path / "methylprep"
+    output.mkdir()
+    (output / "probe_ids.txt").write_text("cg00000002\ncg00000001\n", encoding="utf-8")
+    (output / "sample_order.txt").write_text(f"{sentrix}\n", encoding="utf-8")
+    (output / "environment.txt").write_text("methylprep=1.7.1\n", encoding="utf-8")
+    _write_array(output / f"{sentrix}.quality_excluded.u8", "B", (1, 0))
+    _write_array(output / f"{sentrix}.beta.f64", "d", (0.8, 0.1))
+    _write_array(output / f"{sentrix}.detection_p.f64", "d", (0.2, 0.001))
+    loaded = load_methylprep_output(output, expected_sample_ids=(sentrix,))
+    aligned = align_processor_output_to_probe_order(
+        loaded,
+        ("cg00000001", "cg00000002"),
+    )
+    assert aligned.beta[:, 0].tolist() == [0.1, 0.8]
+    assert aligned.detection_p[:, 0].tolist() == [0.001, 0.2]
+    assert aligned.quality_excluded[:, 0].tolist() == [False, True]
+    selected = select_processor_output_probes(loaded, ("cg00000001",))
+    assert selected.probe_ids == ("cg00000001",)
+    assert selected.beta[:, 0].tolist() == [0.1]
+    with pytest.raises(ValueError, match="probe sets differ"):
+        align_processor_output_to_probe_order(loaded, ("cg00000003",))
+    with pytest.raises(ValueError, match="absent"):
+        select_processor_output_probes(loaded, ("cg00000003",))
+
+
+def test_processor_output_and_sesame_loader_reject_invalid_states(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        ProcessorOutput(
+            probe_ids=("cg00000001",),
+            sample_ids=("sample",),
+            beta=t.tensor([[float("nan")]], dtype=t.float64),
+            detection_p=t.zeros((1, 1), dtype=t.float64),
+            quality_excluded=t.zeros((1, 1), dtype=t.bool),
+        )
+    output = tmp_path / "sesame"
+    output.mkdir()
+    (output / "probe_ids.txt").write_text("cg00000001\n", encoding="utf-8")
+    (output / "sample_order.txt").write_text("sample\n", encoding="utf-8")
+    (output / "environment.txt").write_text("x\n", encoding="utf-8")
+    _write_array(output / "sample.quality_excluded.u8", "B", (2,))
+    _write_array(output / "sample.beta.f64", "d", (0.1,))
+    _write_array(output / "sample.detection_p.f64", "d", (0.1,))
+    with pytest.raises(ValueError, match=r"\{0, 1\}"):
+        load_sesame_output(output, expected_sample_ids=("sample",))
+    with pytest.raises(ValueError, match="sample order differs"):
+        load_sesame_output(output, expected_sample_ids=("different",))
 
 
 MANIFEST_COLUMNS = (
@@ -606,11 +1034,14 @@ def _parity_matrices() -> tuple[t.Tensor, t.Tensor]:
 
 def test_methylprep_sesame_parity_gate_accepts_only_preregistered_agreement() -> None:
     beta, detection_p = _parity_matrices()
+    quality = t.zeros_like(beta, dtype=t.bool)
     audit = assert_processor_parity(
         beta,
         beta.clone(),
         detection_p,
         detection_p.clone(),
+        quality,
+        quality.clone(),
         detection_threshold=parse_fraction(0.01),
         maximum_sample_failure_fraction=parse_fraction(0.01),
     )
@@ -622,6 +1053,20 @@ def test_methylprep_sesame_parity_gate_accepts_only_preregistered_agreement() ->
 
 def test_methylprep_sesame_parity_gate_rejects_decision_and_beta_drift() -> None:
     beta, detection_p = _parity_matrices()
+    quality = t.zeros_like(beta, dtype=t.bool)
+    quality_drift = quality.clone()
+    quality_drift[0, 0] = True
+    with pytest.raises(ValueError, match="quality-mask complete-probe sets differ"):
+        assert_processor_parity(
+            beta,
+            beta,
+            detection_p,
+            detection_p,
+            quality_drift,
+            quality,
+            detection_threshold=parse_fraction(0.01),
+            maximum_sample_failure_fraction=parse_fraction(0.01),
+        )
     sample_drift = detection_p.clone()
     sample_drift[0, 0] = 0.5
     with pytest.raises(ValueError, match="sample-retention decisions differ"):
@@ -630,6 +1075,8 @@ def test_methylprep_sesame_parity_gate_rejects_decision_and_beta_drift() -> None
             beta,
             sample_drift,
             detection_p,
+            quality,
+            quality,
             detection_threshold=parse_fraction(0.01),
             maximum_sample_failure_fraction=parse_fraction(0.01),
         )
@@ -641,6 +1088,8 @@ def test_methylprep_sesame_parity_gate_rejects_decision_and_beta_drift() -> None
             beta,
             probe_drift,
             detection_p,
+            quality,
+            quality,
             detection_threshold=parse_fraction(0.01),
             maximum_sample_failure_fraction=parse_fraction(0.5),
         )
@@ -651,6 +1100,8 @@ def test_methylprep_sesame_parity_gate_rejects_decision_and_beta_drift() -> None
             beta,
             detection_p,
             detection_p,
+            quality,
+            quality,
             detection_threshold=parse_fraction(0.01),
             maximum_sample_failure_fraction=parse_fraction(0.01),
         )
@@ -660,8 +1111,61 @@ def test_methylprep_sesame_parity_gate_rejects_decision_and_beta_drift() -> None
             beta[:, :-1],
             detection_p[:, :-1],
             detection_p[:, :-1],
+            quality[:, :-1],
+            quality[:, :-1],
             detection_threshold=parse_fraction(0.01),
             maximum_sample_failure_fraction=parse_fraction(0.01),
+        )
+    bad_quality = quality.to(t.uint8)
+    with pytest.raises(TypeCheckError, match="methylprep_quality_excluded"):
+        assert_processor_parity(
+            beta,
+            beta,
+            detection_p,
+            detection_p,
+            bad_quality,
+            quality,
+            detection_threshold=parse_fraction(0.01),
+            maximum_sample_failure_fraction=parse_fraction(0.01),
+        )
+    almost_all_quality_excluded = quality.clone()
+    almost_all_quality_excluded[1:] = True
+    with pytest.raises(ValueError, match="fewer than two probes"):
+        assert_processor_parity(
+            beta,
+            beta,
+            detection_p,
+            detection_p,
+            almost_all_quality_excluded,
+            almost_all_quality_excluded,
+            detection_threshold=parse_fraction(0.01),
+            maximum_sample_failure_fraction=parse_fraction(0.01),
+        )
+    almost_all_samples_fail = detection_p.clone()
+    almost_all_samples_fail[:, 1:] = 1.0
+    with pytest.raises(ValueError, match="fewer than two arrays"):
+        assert_processor_parity(
+            beta,
+            beta,
+            almost_all_samples_fail,
+            almost_all_samples_fail,
+            quality,
+            quality,
+            detection_threshold=parse_fraction(0.01),
+            maximum_sample_failure_fraction=parse_fraction(0.01),
+        )
+    one_complete_probe = detection_p.clone()
+    one_complete_probe[1:] = 1.0
+    with pytest.raises(ValueError, match="fewer than two probes"):
+        assert_processor_parity(
+            beta,
+            beta,
+            one_complete_probe,
+            one_complete_probe,
+            quality,
+            quality,
+            detection_threshold=parse_fraction(0.01),
+            maximum_sample_failure_fraction=parse_fraction(1.0),
         )
 
 
