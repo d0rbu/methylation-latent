@@ -388,15 +388,11 @@ def main() -> None:
         chromosomes = tuple(str(int(probe.chromosome)) for probe in test_probes)
         for window in windows:
             embedding_directory = arguments.embeddings / f"window-{window}"
-            embedding_values = (
-                load_embedding_cache(
-                    embedding_directory,
-                    probes,
-                    window_size=configured_windows[window],
-                )
-                .tensor.index_select(0, test_indices)
-                .to(dtype=t.float32)
-            )
+            embedding_values = load_embedding_cache(
+                embedding_directory,
+                probes,
+                window_size=configured_windows[window],
+            ).training_tensor(device="cpu")
             evaluation_path = (
                 arguments.experiments / "evaluation" / split_name / f"window-{window}.json"
             )
@@ -423,8 +419,11 @@ def main() -> None:
                 )
                 model, metadata = _load_model(directory)
                 with t.inference_mode():
-                    prediction = model.predict_age_from_latent(model.latent(embedding_values)).to(
-                        t.float64
+                    all_latent = model.latent(embedding_values)
+                    prediction = (
+                        model.predict_age_from_latent(all_latent)
+                        .to(t.float64)
+                        .index_select(0, test_indices)
                     )
                 _assert_metric_reproduction(
                     _object(_object(evaluation, "age_metrics"), metric_name),
