@@ -29,13 +29,17 @@ from methylation_latent.evaluation import PairPopulation
 from methylation_latent.experiment_data import load_split_artifact
 from methylation_latent.interim_site import (
     INTERIM_SITE_SCHEMA,
+    AgeClusterAgreement,
+    AgeClusterDiagnostic,
+    ContextClusterCounts,
     CorrelationScatterPanel,
     ExploratoryAgeMetricPoint,
     ExploratoryMetricPoint,
     InterimSiteData,
     KernelWeightPoint,
-    LatentTsnePanel,
-    LatentTsnePoint,
+    LatentUmapPanel,
+    LatentUmapPoint,
+    ScatterClusterSeries,
     ScatterPredictionSeries,
     TuningSweepPoint,
     build_interim_static_site,
@@ -48,7 +52,8 @@ _SELECTION_SCHEMA = "methylation-latent.hyperparameter-selection.v2"
 _DISTANCE_SCHEMA = "methylation-latent.exploratory-distance-integration.v2"
 _DIRECT_AGE_SCHEMA = "methylation-latent.exploratory-direct-tanh-age.v1"
 _SCATTER_SCHEMA = "methylation-latent.prediction-scatter.v1"
-_TSNE_SCHEMA = "methylation-latent.validation-latent-tsne.v1"
+_CLUSTER_SCHEMA = "methylation-latent.age-scatter-cluster-audit.v1"
+_UMAP_SCHEMA = "methylation-latent.validation-latent-umap.v1"
 _SPLITS = (
     ("diverse-blocks", "diverse_blocks"),
     ("held-out-chromosome", "held_out_chromosome"),
@@ -65,12 +70,14 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument("--series-matrix", type=Path, required=True)
     parser.add_argument("--experiments", type=Path, required=True)
     parser.add_argument("--embeddings", type=Path, required=True)
     parser.add_argument("--distance-integration", type=Path, required=True)
     parser.add_argument("--direct-age", type=Path, required=True)
     parser.add_argument("--prediction-scatter", type=Path, required=True)
-    parser.add_argument("--latent-tsne", type=Path, required=True)
+    parser.add_argument("--age-cluster-audit", type=Path, required=True)
+    parser.add_argument("--latent-umap", type=Path, required=True)
     parser.add_argument("--results-output", type=Path, required=True)
     parser.add_argument("--site-template", type=Path, required=True)
     parser.add_argument("--root-template", type=Path, required=True)
@@ -573,6 +580,7 @@ def _scatter_panel(
     *,
     window: int,
     population: str,
+    cluster_labels: dict[str, tuple[int, ...]] | None,
 ) -> CorrelationScatterPanel:
     _exact_keys(
         raw,
@@ -602,6 +610,14 @@ def _scatter_panel(
         sample_indices=_integers(raw, "sample_indices"),
         target=_numbers(raw, "target"),
         predictions=series,
+        clusters=(
+            ()
+            if cluster_labels is None
+            else tuple(
+                ScatterClusterSeries(model=model, labels=cluster_labels[model])
+                for model in sorted(cluster_labels)
+            )
+        ),
     )
     if _integer(raw, "display_count") != len(panel.target):
         raise ValueError("scatter display count differs from its aligned vectors")
@@ -619,6 +635,7 @@ def _scatter_panels(
     windows: tuple[int, ...],
     evaluations: tuple[tuple[Path, dict[str, object]], ...],
     direct_records: dict[int, tuple[Path, dict[str, object]]],
+    cluster_labels: dict[int, dict[str, tuple[int, ...]]],
 ) -> tuple[tuple[CorrelationScatterPanel, ...], tuple[str, ...]]:
     panels: list[CorrelationScatterPanel] = []
     artifact_ids: list[str] = []
@@ -664,7 +681,21 @@ def _scatter_panels(
             }
         ):
             raise ValueError(f"prediction scatter identity differs: {path}")
-        panels.append(_scatter_panel(_object(record, "age"), window=window, population="age"))
+        age_raw = _object(record, "age")
+        display_indices = _integers(age_raw, "sample_indices")
+        full_labels = cluster_labels[window]
+        display_labels = {
+            model: tuple(labels[index] for index in display_indices)
+            for model, labels in full_labels.items()
+        }
+        panels.append(
+            _scatter_panel(
+                age_raw,
+                window=window,
+                population="age",
+                cluster_labels=display_labels,
+            )
+        )
         pairs = _object(record, "pairs")
         _exact_keys(
             pairs,
@@ -676,6 +707,7 @@ def _scatter_panels(
                 _object(pairs, population.value),
                 window=window,
                 population=population.value,
+                cluster_labels=None,
             )
             for population in _POPULATIONS
         )
@@ -683,9 +715,249 @@ def _scatter_panels(
     return tuple(panels), tuple(artifact_ids)
 
 
-def _tsne_point(raw: dict[str, object]) -> LatentTsnePoint:
-    _exact_keys(raw, {"probe_id", "chromosome", "position", "context", "x", "y"}, "t-SNE point")
-    return LatentTsnePoint(
+def _two_by_two_numbers(record: dict[str, object], key: str) -> tuple[tuple[float, float], ...]:
+    value = record.get(key)
+    if not isinstance(value, list) or len(value) != 2:
+        raise TypeError(f"{key} must be a two-by-two numeric matrix")
+    rows: list[tuple[float, float]] = []
+    for raw_row in value:
+        if not isinstance(raw_row, list) or len(raw_row) != 2:
+            raise TypeError(f"{key} must be a two-by-two numeric matrix")
+        parsed = tuple(_number({"value": item}, "value") for item in raw_row)
+        rows.append(cast(tuple[float, float], parsed))
+    return tuple(rows)
+
+
+def _cluster_diagnostic(
+    raw: dict[str, object],
+    *,
+    window: int,
+    model: str,
+    source_count: int,
+) -> tuple[AgeClusterDiagnostic, tuple[int, ...]]:
+    kmeans = _object(raw, "kmeans")
+    labels = _integers(kmeans, "labels_in_frozen_test_order")
+    if len(labels) != source_count or set(labels) != {0, 1}:
+        raise ValueError("age-cluster labels must align to all frozen test probes")
+    centers = _two_by_two_numbers(kmeans, "centers_empirical_then_predicted")
+    categorical = _object(raw, "categorical_associations")
+    context = _object(categorical, "genomic_context")
+    design = _object(categorical, "probe_design")
+    strand = _object(categorical, "manifest_strand")
+    chromosome = _object(categorical, "chromosome")
+    context_counts_raw = _object(context, "counts")
+    if set(context_counts_raw) != {context.value for context in GenomicContext}:
+        raise ValueError("age-cluster context levels differ")
+    context_counts = tuple(
+        ContextClusterCounts(
+            context=context_value,
+            negative_count=_integer(
+                _object(context_counts_raw, context_value.value), "negative_cluster"
+            ),
+            positive_count=_integer(
+                _object(context_counts_raw, context_value.value), "positive_cluster"
+            ),
+        )
+        for context_value in GenomicContext
+    )
+    sequence = _object(raw, "sequence_feature_contrasts")
+    cpg_density = _object(sequence, "cpg_density")
+    gc_content = _object(sequence, "gc_content")
+    sex = _object(raw, "sex_stratified_targets")
+    female = _object(sex, "female")
+    male = _object(sex, "male")
+    female_means = _numbers(female, "cluster_target_means")
+    male_means = _numbers(male, "cluster_target_means")
+    if len(female_means) != 2 or len(male_means) != 2:
+        raise ValueError("sex-stratified cluster means must each contain two values")
+    chromosome_status = _string(chromosome, "status")
+    diagnostic = AgeClusterDiagnostic(
+        window_size=window,
+        model=model,
+        source_count=source_count,
+        negative_count=_integer(kmeans, "negative_cluster_count"),
+        positive_count=_integer(kmeans, "positive_cluster_count"),
+        negative_empirical_center=centers[0][0],
+        negative_prediction_center=centers[0][1],
+        positive_empirical_center=centers[1][0],
+        positive_prediction_center=centers[1][1],
+        context_cramer_v=_number(context, "cramer_v"),
+        design_cramer_v=_number(design, "cramer_v"),
+        strand_cramer_v=_number(strand, "cramer_v"),
+        chromosome_cramer_v=(
+            _number(chromosome, "cramer_v") if chromosome_status == "defined" else None
+        ),
+        chromosome_status=chromosome_status,
+        cpg_density_cohen_d=_number(cpg_density, "standardized_mean_difference"),
+        gc_content_cohen_d=_number(gc_content, "standardized_mean_difference"),
+        female_sample_count=_integer(female, "sample_count"),
+        male_sample_count=_integer(male, "sample_count"),
+        female_negative_mean=female_means[0],
+        female_positive_mean=female_means[1],
+        female_separation_cohen_d=_number(female, "cluster_separation_cohen_d"),
+        male_negative_mean=male_means[0],
+        male_positive_mean=male_means[1],
+        male_separation_cohen_d=_number(male, "cluster_separation_cohen_d"),
+        female_male_target_pearson=_number(sex, "female_vs_male_target_pearson"),
+        context_counts=context_counts,
+    )
+    if labels.count(0) != diagnostic.negative_count or labels.count(1) != diagnostic.positive_count:
+        raise ValueError("age-cluster label counts differ from the audit summary")
+    return diagnostic, labels
+
+
+def _age_cluster_diagnostics(
+    cluster_root: Path,
+    data_root: Path,
+    series_matrix: Path,
+    experiments: Path,
+    embeddings_root: Path,
+    direct_root: Path,
+    *,
+    expected_prefix: tuple[str, str, str, str, str],
+    primary_git_commit: str,
+    target_sha256: str,
+    test_indices_sha256: str,
+    test_count: int,
+    windows: tuple[int, ...],
+) -> tuple[
+    tuple[AgeClusterDiagnostic, ...],
+    tuple[AgeClusterAgreement, ...],
+    dict[int, dict[str, tuple[int, ...]]],
+    int,
+    int,
+    str,
+    tuple[str, ...],
+]:
+    diagnostics: list[AgeClusterDiagnostic] = []
+    agreements: list[AgeClusterAgreement] = []
+    labels_by_window: dict[int, dict[str, tuple[int, ...]]] = {}
+    artifact_ids: list[str] = []
+    phenotype_identity: tuple[int, int, str] | None = None
+    split_name = expected_prefix[3]
+    model_names = ("cosine_age_only", "full_latent_metric", "direct_tanh")
+    local_hashes = {
+        "cohort_metadata": sha256_file(data_root / "cohort.json"),
+        "cohort_tensor": sha256_file(data_root / "cohort.safetensors"),
+        "series_matrix": sha256_file(series_matrix),
+        "sequence_features_metadata": sha256_file(data_root / "sequence-features.json"),
+        "sequence_features_tensor": sha256_file(data_root / "sequence-features.safetensors"),
+    }
+    for window in windows:
+        path = cluster_root / split_name / f"window-{window}.json"
+        record = _load_json(path)
+        identity = _object(record, "identity")
+        scope = _object(record, "scope")
+        phenotype = _object(record, "phenotype_audit")
+        cell_composition = _object(phenotype, "cell_composition")
+        female_age = _object(phenotype, "female_age")
+        male_age = _object(phenotype, "male_age")
+        evaluation = experiments / "evaluation" / split_name / f"window-{window}.json"
+        direct_metadata = direct_root / split_name / f"window-{window}" / "metadata.json"
+        direct_predictions = (
+            direct_root / split_name / f"window-{window}" / "predictions.safetensors"
+        )
+        if (
+            record.get("schema") != _CLUSTER_SCHEMA
+            or record.get("status") != "post_hoc_explanatory_frozen_test_targets_used_for_diagnosis"
+            or _identity_tuple(record) != (*expected_prefix, window)
+            or _string(identity, "primary_git_commit") != primary_git_commit
+            or _string(identity, "target_sha256") != target_sha256
+            or _string(identity, "cohort_metadata_sha256") != local_hashes["cohort_metadata"]
+            or _string(identity, "cohort_tensor_sha256") != local_hashes["cohort_tensor"]
+            or _string(identity, "series_matrix_sha256") != local_hashes["series_matrix"]
+            or _string(identity, "sequence_features_metadata_sha256")
+            != local_hashes["sequence_features_metadata"]
+            or _string(identity, "sequence_features_tensor_sha256")
+            != local_hashes["sequence_features_tensor"]
+            or _string(identity, "test_indices_sha256") != test_indices_sha256
+            or _string(identity, "embedding_manifest_sha256")
+            != sha256_file(embeddings_root / f"window-{window}" / "manifest.json")
+            or _string(identity, "evaluation_sha256") != sha256_file(evaluation)
+            or _integer(scope, "test_probe_count") != test_count
+            or _strings(scope, "models") != model_names
+            or scope.get("cluster_input_uses_empirical_target") is not True
+            or scope.get("confirmatory_status") != "post_hoc_not_for_model_selection"
+            or _strings(phenotype, "observed_series_fields")
+            != ("age", "gender", "tissue", "disease state")
+            or _strings(phenotype, "tissue_levels") != ("whole blood",)
+            or _strings(phenotype, "disease_state_levels") != ("normal",)
+            or _string(cell_composition, "status")
+            != "not_testable_no_measured_or_precomputed_cell_proportions"
+        ):
+            raise ValueError(f"age-cluster audit identity differs: {path}")
+        model_artifacts = _object(identity, "model_artifacts")
+        if set(model_artifacts) != set(model_names):
+            raise ValueError("age-cluster model-artifact identities differ")
+        for model_name, stage in (
+            ("cosine_age_only", "age_only"),
+            ("full_latent_metric", "full"),
+        ):
+            artifact = _object(model_artifacts, model_name)
+            directory = experiments / "final" / stage / split_name / f"window-{window}"
+            model_metadata = _load_json(directory / "metadata.json")
+            if _string(artifact, "metadata_sha256") != sha256_file(
+                directory / "metadata.json"
+            ) or _string(artifact, "model_sha256") != _string(model_metadata, "model_sha256"):
+                raise ValueError("age-cluster final-model identity differs")
+        direct_artifact = _object(model_artifacts, "direct_tanh")
+        if _string(direct_artifact, "metadata_sha256") != sha256_file(direct_metadata) or _string(
+            direct_artifact, "predictions_sha256"
+        ) != sha256_file(direct_predictions):
+            raise ValueError("age-cluster direct-tanh identity differs")
+        observed_phenotype = (
+            _integer(female_age, "count"),
+            _integer(male_age, "count"),
+            _string(cell_composition, "status"),
+        )
+        if phenotype_identity is None:
+            phenotype_identity = observed_phenotype
+        elif phenotype_identity != observed_phenotype:
+            raise ValueError("age-cluster phenotype audit differs across windows")
+        raw_analyses = _object(record, "analyses")
+        if set(raw_analyses) != set(model_names):
+            raise ValueError("age-cluster analysis models differ")
+        labels_by_window[window] = {}
+        for model_name in model_names:
+            diagnostic, labels = _cluster_diagnostic(
+                _object(raw_analyses, model_name),
+                window=window,
+                model=model_name,
+                source_count=test_count,
+            )
+            diagnostics.append(diagnostic)
+            labels_by_window[window][model_name] = labels
+        raw_agreement = _object(
+            _object(record, "cross_model_cluster_agreement"),
+            "cosine_age_only__full_latent_metric",
+        )
+        agreements.append(
+            AgeClusterAgreement(
+                window_size=window,
+                source_count=test_count,
+                permutation_invariant_fraction=_number(
+                    raw_agreement, "permutation_invariant_fraction"
+                ),
+                adjusted_rand_index=_number(raw_agreement, "adjusted_rand_index"),
+            )
+        )
+        artifact_ids.append(f"age-scatter-cluster-audit:{window}:{sha256_file(path)}")
+    if phenotype_identity is None:
+        raise RuntimeError("age-cluster audit did not contain any completed window")
+    return (
+        tuple(diagnostics),
+        tuple(agreements),
+        labels_by_window,
+        phenotype_identity[0],
+        phenotype_identity[1],
+        phenotype_identity[2],
+        tuple(artifact_ids),
+    )
+
+
+def _umap_point(raw: dict[str, object]) -> LatentUmapPoint:
+    _exact_keys(raw, {"probe_id", "chromosome", "position", "context", "x", "y"}, "UMAP point")
+    return LatentUmapPoint(
         probe_id=parse_probe_id(_string(raw, "probe_id")),
         chromosome=parse_autosome(_integer(raw, "chromosome")),
         position=parse_one_based_position(_integer(raw, "position")),
@@ -695,8 +967,8 @@ def _tsne_point(raw: dict[str, object]) -> LatentTsnePoint:
     )
 
 
-def _tsne_panels(
-    tsne_root: Path,
+def _umap_panels(
+    umap_root: Path,
     experiments: Path,
     embeddings_root: Path,
     *,
@@ -707,14 +979,14 @@ def _tsne_panels(
     validation_count: int,
     windows: tuple[int, ...],
     dimensions: tuple[int, ...],
-) -> tuple[tuple[LatentTsnePanel, ...], tuple[str, ...]]:
-    panels: list[LatentTsnePanel] = []
+) -> tuple[tuple[LatentUmapPanel, ...], tuple[str, ...]]:
+    panels: list[LatentUmapPanel] = []
     artifact_ids: list[str] = []
     split_name = expected_prefix[3]
     for window in windows:
         embedding_manifest = embeddings_root / f"window-{window}" / "manifest.json"
         for dimension in dimensions:
-            path = tsne_root / split_name / f"window-{window}" / f"d-{dimension}-lambda-0.1.json"
+            path = umap_root / split_name / f"window-{window}" / f"d-{dimension}-lambda-0.1.json"
             record = _load_json(path)
             identity = _object(record, "identity")
             tuning_metadata = (
@@ -728,10 +1000,11 @@ def _tsne_panels(
             )
             tuning_record = _load_json(tuning_metadata)
             sampling = _object(record, "sampling")
-            tsne = _object(record, "tsne")
-            tsne_config = _object(tsne, "config")
+            umap = _object(record, "umap")
+            umap_config = _object(umap, "config")
+            age_point = _object(record, "age_point")
             if (
-                record.get("schema") != _TSNE_SCHEMA
+                record.get("schema") != _UMAP_SCHEMA
                 or record.get("status") != "post_hoc_visualization_validation_partition_only"
                 or _identity_tuple(record) != (*expected_prefix, window)
                 or _string(identity, "primary_git_commit") != primary_git_commit
@@ -747,46 +1020,62 @@ def _tsne_panels(
                 or sampling.get("target_access") != "none"
                 or sampling.get("method") != "metadata_context_balanced_seeded_without_replacement"
                 or _integer(sampling, "source_count") != validation_count
-                or _integer(sampling, "display_count") != 300
+                or _integer(sampling, "display_probe_count") != 300
                 or _integer(sampling, "count_per_context") != 75
-                or tsne.get("implementation") != "exact_torch_student_t"
-                or tsne.get("input_geometry")
-                != "euclidean_on_unit_latent_rows_equivalent_to_cosine"
-                or tsne.get("shared_initialization_across_panels") is not True
+                or _integer(sampling, "age_direction_count") != 1
+                or umap.get("implementation") != "exact_torch_fuzzy_cross_entropy"
+                or umap.get("input_geometry")
+                != "euclidean_on_unit_probe_rows_and_unit_age_direction_equivalent_to_cosine"
+                or umap.get("graph") != "exact_knn_default_fuzzy_union"
+                or umap.get("initialization") != "deterministic_normalized_laplacian_spectral"
+                or umap.get("objective")
+                != (
+                    "complete_bernoulli_fuzzy_set_cross_entropy_without_"
+                    "negative_sampling_approximation"
+                )
                 or {
-                    "perplexity": _number(tsne_config, "perplexity"),
-                    "probability_search_steps": _integer(tsne_config, "probability_search_steps"),
-                    "optimization_steps": _integer(tsne_config, "optimization_steps"),
-                    "early_exaggeration_steps": _integer(tsne_config, "early_exaggeration_steps"),
-                    "early_exaggeration": _number(tsne_config, "early_exaggeration"),
-                    "learning_rate": _number(tsne_config, "learning_rate"),
-                    "seed": _integer(tsne_config, "seed"),
+                    "n_neighbors": _integer(umap_config, "n_neighbors"),
+                    "local_connectivity": _number(umap_config, "local_connectivity"),
+                    "smooth_knn_search_steps": _integer(umap_config, "smooth_knn_search_steps"),
+                    "min_dist": _number(umap_config, "min_dist"),
+                    "spread": _number(umap_config, "spread"),
+                    "optimization_steps": _integer(umap_config, "optimization_steps"),
+                    "learning_rate": _number(umap_config, "learning_rate"),
+                    "seed": _integer(umap_config, "seed"),
                 }
                 != {
-                    "perplexity": 30.0,
-                    "probability_search_steps": 60,
-                    "optimization_steps": 1_000,
-                    "early_exaggeration_steps": 250,
-                    "early_exaggeration": 12.0,
-                    "learning_rate": 50.0,
-                    "seed": 411_807,
+                    "n_neighbors": 15,
+                    "local_connectivity": 1.0,
+                    "smooth_knn_search_steps": 64,
+                    "min_dist": 0.1,
+                    "spread": 1.0,
+                    "optimization_steps": 750,
+                    "learning_rate": 0.05,
+                    "seed": 618_437,
                 }
+                or age_point.get("label") != "learned age direction"
             ):
-                raise ValueError(f"latent t-SNE identity differs: {path}")
+                raise ValueError(f"latent UMAP identity differs: {path}")
             raw_points = _objects(record, "points")
             panels.append(
-                LatentTsnePanel(
+                LatentUmapPanel(
                     window_size=window,
                     latent_dimension=dimension,
                     lambda_age=0.1,
                     source_count=validation_count,
                     count_per_context=75,
-                    perplexity=30.0,
-                    final_kl_divergence=_number(tsne, "final_kl_divergence"),
-                    points=tuple(_tsne_point(point) for point in raw_points),
+                    n_neighbors=15,
+                    min_dist=0.1,
+                    initial_cross_entropy=_number(umap, "initial_cross_entropy"),
+                    final_cross_entropy=_number(umap, "final_cross_entropy"),
+                    graph_edge_count=_integer(umap, "graph_edge_count"),
+                    spectral_gap=_number(umap, "spectral_gap"),
+                    age_x=_number(age_point, "x"),
+                    age_y=_number(age_point, "y"),
+                    points=tuple(_umap_point(point) for point in raw_points),
                 )
             )
-            artifact_ids.append(f"validation-latent-tsne:{window}:{dimension}:{sha256_file(path)}")
+            artifact_ids.append(f"validation-latent-umap:{window}:{dimension}:{sha256_file(path)}")
     return tuple(panels), tuple(artifact_ids)
 
 
@@ -868,6 +1157,28 @@ def main() -> None:
             target_sha256=target_sha256,
             windows=windows,
         )
+        (
+            cluster_diagnostics,
+            cluster_agreements,
+            cluster_labels,
+            female_sample_count,
+            male_sample_count,
+            cell_composition_status,
+            cluster_artifacts,
+        ) = _age_cluster_diagnostics(
+            arguments.age_cluster_audit,
+            arguments.data,
+            arguments.series_matrix,
+            arguments.experiments,
+            arguments.embeddings,
+            arguments.direct_age,
+            expected_prefix=expected,
+            primary_git_commit=bundle.git_commit,
+            target_sha256=target_sha256,
+            test_indices_sha256=sha256_ordered_strings(map(str, split.test_indices.tolist())),
+            test_count=split.test_indices.numel(),
+            windows=windows,
+        )
         scatter_panels, scatter_artifacts = _scatter_panels(
             arguments.prediction_scatter,
             arguments.experiments,
@@ -878,12 +1189,13 @@ def main() -> None:
             windows=windows,
             evaluations=evaluations,
             direct_records=direct_age_records,
+            cluster_labels=cluster_labels,
         )
         projection_dimensions = tuple(
             dimension for dimension in map(int, config.sweep.latent_dimensions) if dimension <= 128
         )
-        tsne_panels, tsne_artifacts = _tsne_panels(
-            arguments.latent_tsne,
+        umap_panels, umap_artifacts = _umap_panels(
+            arguments.latent_umap,
             arguments.experiments,
             arguments.embeddings,
             expected_prefix=expected,
@@ -907,8 +1219,9 @@ def main() -> None:
             *tuning_artifacts,
             *distance_artifacts,
             *direct_age_artifacts,
+            *cluster_artifacts,
             *scatter_artifacts,
-            *tsne_artifacts,
+            *umap_artifacts,
         )
         data = InterimSiteData(
             schema=INTERIM_SITE_SCHEMA,
@@ -916,13 +1229,13 @@ def main() -> None:
             status=(
                 "Interim report: primary-validated 1 kb and 4 kb selected-model results, "
                 "nested-validation hyperparameter sweeps, and separately labeled post-hoc "
-                "direct-age, distance-integration, scatter, and latent t-SNE analyses."
+                "direct-age, distance-integration, scatter-cluster, and latent UMAP analyses."
             ),
             disclaimer=(
                 "The planned 16 kb and 64 kb windows and the preregistered 16 kb projection are "
                 "not complete. Distance integration was designed after viewing existing test "
-                "results; the corrected direct tanh baseline and all new visualizations are "
-                "also post-hoc. They require a new holdout for confirmation."
+                "results; the corrected direct tanh baseline, k=2 scatter audit, and all new "
+                "visualizations are also post-hoc. They require a new holdout for confirmation."
             ),
             split_name=split_name,
             split_family=split_family,
@@ -930,6 +1243,9 @@ def main() -> None:
             split_sha256=split_sha256,
             retained_probe_count=bundle.retained_probes,
             retained_sample_count=bundle.retained_samples,
+            female_sample_count=female_sample_count,
+            male_sample_count=male_sample_count,
+            cell_composition_status=cell_composition_status,
             completed_windows=windows,
             planned_windows=planned_windows,
             latent_dimensions=tuple(map(int, config.sweep.latent_dimensions)),
@@ -941,7 +1257,9 @@ def main() -> None:
             primary_age_metrics=primary_age,
             exploratory_age_metrics=exploratory_age,
             scatter_panels=scatter_panels,
-            latent_tsne_panels=tsne_panels,
+            age_cluster_diagnostics=cluster_diagnostics,
+            age_cluster_agreements=cluster_agreements,
+            latent_umap_panels=umap_panels,
             exploratory_uniform_metrics=exploratory_uniform,
             exploratory_distance_metrics=exploratory_distance,
             kernel_weights=weights,

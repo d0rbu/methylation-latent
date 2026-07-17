@@ -12,6 +12,9 @@ const colors = {
   shore: "#4977a3",
   shelf: "#b78105",
   open_sea: "#c43f52",
+  negative_cluster: "#c43f52",
+  positive_cluster: "#006b57",
+  age_direction: "#17221d",
 };
 
 const distanceOrder = [
@@ -186,8 +189,9 @@ const plotNote = text => {
   return note;
 };
 
-const drawCorrelationCanvas = (target, prediction, color, label) => {
+const drawCorrelationCanvas = (target, prediction, color, label, clusterLabels = null) => {
   if (target.length !== prediction.length || !target.length) throw new Error(`${label} scatter vectors differ`);
+  if (clusterLabels !== null && clusterLabels.length !== target.length) throw new Error(`${label} cluster labels differ`);
   const [canvas, context, size] = canvasFrame(label);
   const left = 48;
   const right = size - 16;
@@ -223,10 +227,12 @@ const drawCorrelationCanvas = (target, prediction, color, label) => {
   context.stroke();
   context.setLineDash([]);
   context.globalAlpha = 0.24;
-  context.fillStyle = color;
   target.forEach((value, index) => {
     const x = coordinateX(value);
     const y = coordinateY(prediction[index]);
+    context.fillStyle = clusterLabels === null
+      ? color
+      : colors[clusterLabels[index] === 0 ? "negative_cluster" : "positive_cluster"];
     context.fillRect(x - 1.15, y - 1.15, 2.3, 2.3);
   });
   context.globalAlpha = 1;
@@ -270,12 +276,24 @@ const drawAgeScatter = panels => {
       grid.className = "plot-grid";
       ["cosine_age_only", "direct_tanh", "full_latent_metric"].forEach(model => {
         const series = panel.predictions.find(candidate => candidate.model === model);
-        if (!series) throw new Error(`missing age scatter series ${model}`);
+        const clusters = panel.clusters.find(candidate => candidate.model === model);
+        if (!series || !clusters) throw new Error(`missing age scatter series or clusters ${model}`);
         const figure = plotFigure(scatterModelLabels[model]);
-        figure.append(drawCorrelationCanvas(panel.target, series.values, colors[model], `${windowLabel(panel.window_size)} ${scatterModelLabels[model]} predicted versus empirical age correlation`));
+        figure.append(drawCorrelationCanvas(
+          panel.target,
+          series.values,
+          colors[model],
+          `${windowLabel(panel.window_size)} ${scatterModelLabels[model]} predicted versus empirical age correlation`,
+          clusters.labels,
+        ));
         grid.append(figure);
       });
-      card.append(grid, plotNote("Dashed diagonal: perfect prediction. Axes fixed to [−1, 1]."));
+      card.append(grid);
+      legend(card, [
+        ["k=2 lower empirical-age lobe", colors.negative_cluster],
+        ["k=2 higher empirical-age lobe", colors.positive_cluster],
+      ]);
+      card.append(plotNote("Dashed diagonal: perfect prediction. Axes fixed to [−1, 1]. Cluster colors come from the full frozen-test audit, not only the displayed sample."));
       node.append(card);
     });
 };
@@ -300,17 +318,35 @@ const drawPairScatter = (panels, primaryRows) => {
     });
 };
 
-const drawTsneCanvas = (points, label) => {
-  if (!points.length) throw new Error(`${label} has no t-SNE points`);
+const drawStar = (context, x, y, outerRadius = 9, innerRadius = 4) => {
+  context.beginPath();
+  Array.from({ length: 10 }, (_, index) => {
+    const angle = -Math.PI / 2 + index * Math.PI / 5;
+    const radius = index % 2 === 0 ? outerRadius : innerRadius;
+    const px = x + Math.cos(angle) * radius;
+    const py = y + Math.sin(angle) * radius;
+    if (index === 0) context.moveTo(px, py); else context.lineTo(px, py);
+  });
+  context.closePath();
+  context.fillStyle = colors.age_direction;
+  context.strokeStyle = "#fffdf8";
+  context.lineWidth = 2;
+  context.fill();
+  context.stroke();
+};
+
+const drawUmapCanvas = (points, agePoint, label) => {
+  if (!points.length) throw new Error(`${label} has no UMAP points`);
   const [canvas, context, size] = canvasFrame(label, 360);
   const margin = 18;
-  const xs = points.map(point => point.x);
-  const ys = points.map(point => point.y);
+  const allPoints = [...points, agePoint];
+  const xs = allPoints.map(point => point.x);
+  const ys = allPoints.map(point => point.y);
   const xMin = Math.min(...xs);
   const xMax = Math.max(...xs);
   const yMin = Math.min(...ys);
   const yMax = Math.max(...ys);
-  if (xMin === xMax || yMin === yMax) throw new Error(`${label} has a collapsed t-SNE axis`);
+  if (xMin === xMax || yMin === yMax) throw new Error(`${label} has a collapsed UMAP axis`);
   const x = value => margin + (size - 2 * margin) * (value - xMin) / (xMax - xMin);
   const y = value => size - margin - (size - 2 * margin) * (value - yMin) / (yMax - yMin);
   context.fillStyle = "#fffdf8";
@@ -325,11 +361,12 @@ const drawTsneCanvas = (points, label) => {
     context.fill();
   });
   context.globalAlpha = 1;
+  drawStar(context, x(agePoint.x), y(agePoint.y));
   return canvas;
 };
 
-const drawLatentTsne = panels => {
-  const node = document.querySelector("#latent-tsne");
+const drawLatentUmap = panels => {
+  const node = document.querySelector("#latent-umap");
   const windows = [...new Set(panels.map(panel => panel.window_size))].sort((a, b) => a - b);
   windows.forEach(window => {
     const card = article(`${windowLabel(window)} · λ = 0.1 · validation loci only`);
@@ -340,15 +377,75 @@ const drawLatentTsne = panels => {
       .forEach(panel => {
         const figure = plotFigure(`d = ${panel.latent_dimension}`);
         figure.append(
-          drawTsneCanvas(panel.points, `${windowLabel(window)} d ${panel.latent_dimension} t-SNE colored by genomic context`),
-          plotNote(`n = ${panel.points.length} · perplexity ${panel.perplexity} · final KL ${metric(panel.final_kl_divergence, 4)}`),
+          drawUmapCanvas(
+            panel.points,
+            { x: panel.age_x, y: panel.age_y },
+            `${windowLabel(window)} d ${panel.latent_dimension} UMAP colored by genomic context with learned age direction`,
+          ),
+          plotNote(`n = ${panel.points.length} probes + age · neighbors ${panel.n_neighbors} · min_dist ${panel.min_dist} · final cross-entropy ${metric(panel.final_cross_entropy, 5)}`),
         );
         grid.append(figure);
       });
     card.append(grid);
     legend(card, Object.entries(contextLabels).map(([key, value]) => [value, colors[key]]));
+    const ageLegend = document.createElement("p");
+    ageLegend.className = "plot-note";
+    ageLegend.textContent = "★ learned age direction (included as a point in the UMAP graph)";
+    card.append(ageLegend);
     node.append(card);
   });
+};
+
+const drawAgeClusterDiagnostics = (rows, agreements, data) => {
+  const node = document.querySelector("#age-cluster-diagnostics");
+  const modelOrder = ["cosine_age_only", "full_latent_metric", "direct_tanh"];
+  [...new Set(rows.map(row => row.window_size))].sort((a, b) => a - b).forEach(window => {
+    const selected = rows
+      .filter(row => row.window_size === window)
+      .sort((a, b) => modelOrder.indexOf(a.model) - modelOrder.indexOf(b.model));
+    const full = selected.find(row => row.model === "full_latent_metric");
+    const agreement = agreements.find(row => row.window_size === window);
+    if (!full || !agreement) throw new Error(`missing age-cluster diagnostics for ${window}`);
+    const card = article(`${windowLabel(window)} · k=2 on all ${full.source_count.toLocaleString()} frozen-test probes`);
+    card.append(table(
+      ["Model", "low center empirical → predicted", "high center empirical → predicted", "low / high n", "context V", "design V", "strand V", "chromosome V", "CpG-density d", "GC d", "female / male separation d"],
+      selected.map(row => [
+        scatterModelLabels[row.model],
+        `${metric(row.negative_empirical_center)} → ${metric(row.negative_prediction_center)}`,
+        `${metric(row.positive_empirical_center)} → ${metric(row.positive_prediction_center)}`,
+        `${row.negative_count.toLocaleString()} / ${row.positive_count.toLocaleString()}`,
+        metric(row.context_cramer_v),
+        metric(row.design_cramer_v),
+        metric(row.strand_cramer_v),
+        row.chromosome_cramer_v === null ? "not testable (one chromosome)" : metric(row.chromosome_cramer_v),
+        metric(row.cpg_density_cohen_d),
+        metric(row.gc_content_cohen_d),
+        `${metric(row.female_separation_cohen_d)} / ${metric(row.male_separation_cohen_d)}`,
+      ]),
+    ));
+    const contextHeading = document.createElement("h4");
+    contextHeading.textContent = "Full latent metric: genomic-context composition";
+    card.append(contextHeading, table(
+      ["Context", "lower lobe n", "higher lobe n", "higher-lobe fraction"],
+      full.context_counts.map(row => [
+        contextLabels[row.context],
+        row.negative_count.toLocaleString(),
+        row.positive_count.toLocaleString(),
+        metric(row.positive_count / (row.negative_count + row.positive_count), 3),
+      ]),
+    ));
+    const chromosomeFinding = full.chromosome_status === "not_testable_single_level"
+      ? "Every audited probe is on chromosome 7, yet both lobes remain, so chromosome identity cannot explain the split within this holdout."
+      : `Chromosome is associated only weakly (V=${metric(full.chromosome_cramer_v)}) compared with genomic context (V=${metric(full.context_cramer_v)}).`;
+    card.append(plotNote(
+      `The dominant measured separator is CpG context/local CpG density: context V=${metric(full.context_cramer_v)} and CpG-density d=${metric(full.cpg_density_cohen_d)}. ${chromosomeFinding} Strand V=${metric(full.strand_cramer_v)}, arguing against a strand-convention artifact. Female and male target vectors correlate at r=${metric(full.female_male_target_pearson)}, and the lobe separation remains within each sex (d=${metric(full.female_separation_cohen_d)} female; ${metric(full.male_separation_cohen_d)} male), so sex is not the sole cause. Cosine/full cluster agreement is ${(100 * agreement.permutation_invariant_fraction).toFixed(1)}% (ARI ${metric(agreement.adjusted_rand_index)}).`,
+    ));
+    node.append(card);
+  });
+  const limitation = document.createElement("p");
+  limitation.className = "empty";
+  limitation.textContent = `Cell composition: ${data.cell_composition_status.replaceAll("_", " ")}. The GEO phenotype has sex but no measured or precomputed leukocyte proportions, so cell-type composition remains a plausible unresolved contributor and was not inferred circularly from the methylation targets. Cohort sex counts: ${data.female_sample_count} female, ${data.male_sample_count} male.`;
+  node.append(limitation);
 };
 
 const drawTuning = (rows, dimensions, lambdas) => {
@@ -583,10 +680,11 @@ fetch("results.json", { cache: "no-store" })
     drawAge(data.primary_age_metrics);
     drawDirectAge(data.exploratory_age_metrics);
     drawAgeScatter(data.scatter_panels);
+    drawAgeClusterDiagnostics(data.age_cluster_diagnostics, data.age_cluster_agreements, data);
     drawPrimaryDistance(data.primary_distance_metrics);
     drawIntegration(data.exploratory_uniform_metrics, data.kernel_weights);
     drawIntegratedDistance(data.exploratory_distance_metrics, data.primary_distance_metrics);
-    drawLatentTsne(data.latent_tsne_panels);
+    drawLatentUmap(data.latent_umap_panels);
     const artifacts = document.querySelector("#artifacts");
     data.artifact_ids.forEach(identifier => {
       const item = document.createElement("li");

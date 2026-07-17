@@ -16,13 +16,17 @@ from methylation_latent.domain import (
 from methylation_latent.evaluation import PairPopulation
 from methylation_latent.interim_site import (
     INTERIM_SITE_SCHEMA,
+    AgeClusterAgreement,
+    AgeClusterDiagnostic,
+    ContextClusterCounts,
     CorrelationScatterPanel,
     ExploratoryAgeMetricPoint,
     ExploratoryMetricPoint,
     InterimSiteData,
     KernelWeightPoint,
-    LatentTsnePanel,
-    LatentTsnePoint,
+    LatentUmapPanel,
+    LatentUmapPoint,
+    ScatterClusterSeries,
     ScatterPredictionSeries,
     TuningSweepPoint,
     build_interim_static_site,
@@ -58,6 +62,40 @@ def _exploratory(
         pearson=0.2,
         pearson_status="defined",
         r_squared=-0.1,
+    )
+
+
+def _cluster_diagnostic(model: str) -> AgeClusterDiagnostic:
+    return AgeClusterDiagnostic(
+        window_size=1024,
+        model=model,
+        source_count=8,
+        negative_count=4,
+        positive_count=4,
+        negative_empirical_center=-0.2,
+        negative_prediction_center=-0.1,
+        positive_empirical_center=0.2,
+        positive_prediction_center=0.1,
+        context_cramer_v=0.6,
+        design_cramer_v=0.3,
+        strand_cramer_v=0.01,
+        chromosome_cramer_v=0.15,
+        chromosome_status="defined",
+        cpg_density_cohen_d=1.7,
+        gc_content_cohen_d=0.9,
+        female_sample_count=374,
+        male_sample_count=282,
+        female_negative_mean=-0.2,
+        female_positive_mean=0.2,
+        female_separation_cohen_d=1.6,
+        male_negative_mean=-0.25,
+        male_positive_mean=0.25,
+        male_separation_cohen_d=1.9,
+        female_male_target_pearson=0.93,
+        context_counts=tuple(
+            ContextClusterCounts(context=context, negative_count=1, positive_count=1)
+            for context in GenomicContext
+        ),
     )
 
 
@@ -109,7 +147,7 @@ def _valid() -> InterimSiteData:
         CorrelationScatterPanel(
             1024,
             "age",
-            3,
+            8,
             7,
             scatter_indices,
             scatter_target,
@@ -118,22 +156,27 @@ def _valid() -> InterimSiteData:
                 ScatterPredictionSeries("direct_tanh", (-0.1, 0.3)),
                 ScatterPredictionSeries("full_latent_metric", (0.0, 0.4)),
             ),
+            tuple(
+                ScatterClusterSeries(model, (0, 1))
+                for model in ("cosine_age_only", "direct_tanh", "full_latent_metric")
+            ),
         ),
         *(
             CorrelationScatterPanel(
                 1024,
                 population.value,
-                3,
+                8,
                 8,
                 scatter_indices,
                 scatter_target,
                 (ScatterPredictionSeries("full_latent_metric", (-0.1, 0.1)),),
+                (),
             )
             for population in _POPULATIONS
         ),
     )
-    tsne_points = tuple(
-        LatentTsnePoint(
+    umap_points = tuple(
+        LatentUmapPoint(
             probe_id=parse_probe_id(f"cg{index + 1:08d}"),
             chromosome=parse_autosome(1),
             position=parse_one_based_position(index + 1),
@@ -154,6 +197,9 @@ def _valid() -> InterimSiteData:
         split_sha256="b" * 64,
         retained_probe_count=100,
         retained_sample_count=656,
+        female_sample_count=374,
+        male_sample_count=282,
+        cell_composition_status="not_testable_no_measured_or_precomputed_cell_proportions",
         completed_windows=(1024,),
         planned_windows=(1024, 4096),
         latent_dimensions=(16,),
@@ -165,7 +211,29 @@ def _valid() -> InterimSiteData:
         primary_age_metrics=primary_age,
         exploratory_age_metrics=(ExploratoryAgeMetricPoint(1024, 10, 100, 0.04, 0.05, 0.2, -0.1),),
         scatter_panels=scatter_panels,
-        latent_tsne_panels=(LatentTsnePanel(1024, 16, 0.1, 10, 1, 2.0, 0.5, tsne_points),),
+        age_cluster_diagnostics=tuple(
+            _cluster_diagnostic(model)
+            for model in ("cosine_age_only", "direct_tanh", "full_latent_metric")
+        ),
+        age_cluster_agreements=(AgeClusterAgreement(1024, 8, 0.95, 0.82),),
+        latent_umap_panels=(
+            LatentUmapPanel(
+                window_size=1024,
+                latent_dimension=16,
+                lambda_age=0.1,
+                source_count=10,
+                count_per_context=1,
+                n_neighbors=2,
+                min_dist=0.1,
+                initial_cross_entropy=2.0,
+                final_cross_entropy=0.5,
+                graph_edge_count=4,
+                spectral_gap=0.2,
+                age_x=0.5,
+                age_y=-0.5,
+                points=umap_points,
+            ),
+        ),
         exploratory_uniform_metrics=uniform,
         exploratory_distance_metrics=by_distance,
         kernel_weights=(
@@ -304,7 +372,7 @@ def test_scatter_panel_rejects_misalignment_and_unknown_models() -> None:
         ({"source_count": 0}, "positive"),
         ({"population": "training"}, "unknown"),
         ({"sample_indices": (1, 0)}, "increasing"),
-        ({"sample_indices": (0, 3)}, "in range"),
+        ({"sample_indices": (0, 8)}, "in range"),
         ({"target": (0.1,)}, "aligned"),
         ({"target": (0.1, 1.1)}, "correlations"),
         ({"predictions": valid.predictions[:-1]}, "required aligned models"),
@@ -323,18 +391,19 @@ def test_scatter_panel_rejects_misalignment_and_unknown_models() -> None:
             replace(valid, **change)
 
 
-def test_tsne_point_and_panel_reject_invalid_geometry() -> None:
+def test_umap_point_and_panel_reject_invalid_geometry() -> None:
     data = _valid()
-    point = data.latent_tsne_panels[0].points[0]
+    point = data.latent_umap_panels[0].points[0]
     with pytest.raises(ValueError, match="finite"):
         replace(point, x=float("nan"))
-    panel = data.latent_tsne_panels[0]
+    panel = data.latent_umap_panels[0]
     cases: tuple[tuple[dict[str, object], str], ...] = (
         ({"window_size": 0}, "inconsistent"),
         ({"source_count": 3}, "inconsistent"),
-        ({"perplexity": 4.0}, "inconsistent"),
-        ({"final_kl_divergence": float("nan")}, "finite"),
-        ({"final_kl_divergence": -0.1}, "non-negative"),
+        ({"n_neighbors": 5}, "inconsistent"),
+        ({"final_cross_entropy": float("nan")}, "finite"),
+        ({"final_cross_entropy": -0.1}, "optimization"),
+        ({"final_cross_entropy": 2.0}, "optimization"),
         ({"count_per_context": 2}, "balanced context count"),
         (
             {
@@ -370,6 +439,7 @@ def test_tsne_point_and_panel_reject_invalid_geometry() -> None:
         ({"data_sha256": "bad"}, "SHA-256"),
         ({"retained_probe_count": 0}, "positive probes"),
         ({"retained_sample_count": 1}, "at least two"),
+        ({"female_sample_count": 0}, "phenotype"),
         ({"completed_windows": ()}, "sweep axes"),
         ({"planned_windows": (4096, 1024)}, "sweep axes"),
         ({"latent_dimensions": (16, 16)}, "sweep axes"),
@@ -378,7 +448,8 @@ def test_tsne_point_and_panel_reject_invalid_geometry() -> None:
         ({"artifact_ids": ("same", "same")}, "artifact IDs"),
         ({"tuning_sweep": ()}, "every completed-results"),
         ({"scatter_panels": ()}, "every completed-results"),
-        ({"latent_tsne_panels": ()}, "every completed-results"),
+        ({"age_cluster_diagnostics": ()}, "every completed-results"),
+        ({"latent_umap_panels": ()}, "every completed-results"),
     ],
 )
 def test_interim_envelope_rejects_invalid_state(change: dict[str, object], message: str) -> None:
@@ -447,8 +518,8 @@ def test_interim_cross_panel_contract_rejects_incomplete_or_duplicate_keys() -> 
             "scatter panels",
         ),
         (
-            "latent_tsne_panels",
-            (replace(data.latent_tsne_panels[0], lambda_age=1.0),),
+            "latent_umap_panels",
+            (replace(data.latent_umap_panels[0], lambda_age=1.0),),
             "through 128",
         ),
     )
@@ -457,9 +528,9 @@ def test_interim_cross_panel_contract_rejects_incomplete_or_duplicate_keys() -> 
             replace(data, **{field: changed})
 
 
-def test_interim_rejects_different_loci_across_tsne_panels() -> None:
+def test_interim_rejects_different_loci_across_umap_panels() -> None:
     data = _valid()
-    second = replace(data.latent_tsne_panels[0], window_size=2048)
+    second = replace(data.latent_umap_panels[0], window_size=2048)
     expanded = replace(
         data,
         completed_windows=(1024, 2048),
@@ -484,7 +555,15 @@ def test_interim_rejects_different_loci_across_tsne_panels() -> None:
             *data.scatter_panels,
             *(replace(point, window_size=2048) for point in data.scatter_panels),
         ),
-        latent_tsne_panels=(data.latent_tsne_panels[0], second),
+        age_cluster_diagnostics=(
+            *data.age_cluster_diagnostics,
+            *(replace(point, window_size=2048) for point in data.age_cluster_diagnostics),
+        ),
+        age_cluster_agreements=(
+            *data.age_cluster_agreements,
+            replace(data.age_cluster_agreements[0], window_size=2048),
+        ),
+        latent_umap_panels=(data.latent_umap_panels[0], second),
         tuning_sweep=(
             data.tuning_sweep[0],
             replace(data.tuning_sweep[0], window_size=2048),
@@ -512,7 +591,7 @@ def test_interim_rejects_different_loci_across_tsne_panels() -> None:
     with pytest.raises(ValueError, match="same ordered validation loci"):
         replace(
             expanded,
-            latent_tsne_panels=(data.latent_tsne_panels[0], changed_second),
+            latent_umap_panels=(data.latent_umap_panels[0], changed_second),
         )
 
 

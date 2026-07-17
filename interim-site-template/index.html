@@ -67,6 +67,15 @@
         <div id="direct-age-metrics" class="panel"></div>
         <div id="age-scatter" class="panel scatter-panel"></div>
       </section>
+      <section class="exploratory">
+        <p class="section-label exploratory-label">Post-hoc explanatory audit · target-aware</p>
+        <h2>Why do the age-association plots split into two lobes?</h2>
+        <p>Deterministic k-means with <em>k</em> = 2 was fit to every frozen-test point using its
+          empirical and predicted age correlation. Because the empirical target enters this audit,
+          it is diagnostic only: it was not used to train, select, or score a model. Effect sizes
+          below compare the lower-empirical-correlation lobe with the higher lobe.</p>
+        <div id="age-cluster-diagnostics" class="panel"></div>
+      </section>
       <section>
         <p class="section-label primary">Primary-validated selected models</p>
         <h2>Distance-stratified pair behavior</h2>
@@ -90,12 +99,14 @@
       <section class="exploratory">
         <p class="section-label exploratory-label">Nested validation only · post-hoc visualization</p>
         <h2>Latent geometry across dimensionality</h2>
-        <p>Exact Torch t-SNE for the full models at λ = 0.1 and d = 16, 32, 64, 128.
+        <p>Deterministic exact-Torch UMAP for the full models at λ = 0.1 and d = 16, 32, 64, 128.
           Every panel uses the same 300 validation loci, balanced to 75 per genomic context,
-          and the same initialization. No test loci or targets enter these projections.</p>
-        <p class="empty">t-SNE preserves local neighborhoods, not axis orientation or global
-          cluster distance. These panels are descriptive and are not a model-selection metric.</p>
-        <div id="latent-tsne" class="panel projection-panel"></div>
+          plus the normalized learned age direction as a separately marked point. No test loci or
+          targets enter these projections.</p>
+        <p class="empty">UMAP preserves fuzzy local neighborhoods; axis orientation and global
+          distances are not directly interpretable. These panels are descriptive and are not a
+          model-selection metric.</p>
+        <div id="latent-umap" class="panel projection-panel"></div>
       </section>
       <section>
         <p class="section-label">Pending preregistered output</p>

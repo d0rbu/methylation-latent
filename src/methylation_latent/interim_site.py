@@ -14,7 +14,7 @@ from methylation_latent.domain import Autosome, GenomicContext, OneBasedPosition
 from methylation_latent.evaluation import DISTANCE_CLASS_LABELS, PairPopulation
 from methylation_latent.site import AgeMetricPoint, DistanceMetricPoint, WindowSweepPoint
 
-INTERIM_SITE_SCHEMA = "methylation-latent.interim-site-data.v2"
+INTERIM_SITE_SCHEMA = "methylation-latent.interim-site-data.v3"
 EXPLORATORY_MODELS = frozenset(
     {
         "sequence",
@@ -31,6 +31,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$", flags=re.ASCII)
 _SCATTER_POPULATIONS = frozenset({"age", *(population.value for population in _PAIR_POPULATIONS)})
 _AGE_SCATTER_MODELS = frozenset({"cosine_age_only", "direct_tanh", "full_latent_metric"})
 _PAIR_SCATTER_MODELS = frozenset({"full_latent_metric"})
+_AGE_CLUSTER_MODELS = _AGE_SCATTER_MODELS
 
 
 def _finite(value: float, name: str) -> None:
@@ -168,6 +169,18 @@ class ScatterPredictionSeries:
 
 
 @dataclass(frozen=True, slots=True)
+class ScatterClusterSeries:
+    model: str
+    labels: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if not self.model or not self.labels:
+            raise ValueError("scatter cluster labels must be named and non-empty")
+        if set(self.labels) != {0, 1}:
+            raise ValueError("scatter cluster labels must contain both zero and one")
+
+
+@dataclass(frozen=True, slots=True)
 class CorrelationScatterPanel:
     window_size: int
     population: str
@@ -176,6 +189,7 @@ class CorrelationScatterPanel:
     sample_indices: tuple[int, ...]
     target: tuple[float, ...]
     predictions: tuple[ScatterPredictionSeries, ...]
+    clusters: tuple[ScatterClusterSeries, ...]
 
     def __post_init__(self) -> None:
         if self.window_size <= 0 or self.source_count <= 0:
@@ -201,10 +215,20 @@ class CorrelationScatterPanel:
             or any(len(series.values) != len(self.target) for series in self.predictions)
         ):
             raise ValueError("scatter prediction series differ from the required aligned models")
+        if self.population == "age":
+            cluster_models = tuple(series.model for series in self.clusters)
+            if (
+                len(set(cluster_models)) != len(cluster_models)
+                or set(cluster_models) != _AGE_CLUSTER_MODELS
+                or any(len(series.labels) != len(self.target) for series in self.clusters)
+            ):
+                raise ValueError("age scatter cluster labels differ from the aligned models")
+        elif self.clusters:
+            raise ValueError("pair scatter panels must not contain age-cluster labels")
 
 
 @dataclass(frozen=True, slots=True)
-class LatentTsnePoint:
+class LatentUmapPoint:
     probe_id: ProbeId
     chromosome: Autosome
     position: OneBasedPosition
@@ -213,20 +237,26 @@ class LatentTsnePoint:
     y: float
 
     def __post_init__(self) -> None:
-        _finite(self.x, "t-SNE x")
-        _finite(self.y, "t-SNE y")
+        _finite(self.x, "UMAP x")
+        _finite(self.y, "UMAP y")
 
 
 @dataclass(frozen=True, slots=True)
-class LatentTsnePanel:
+class LatentUmapPanel:
     window_size: int
     latent_dimension: int
     lambda_age: float
     source_count: int
     count_per_context: int
-    perplexity: float
-    final_kl_divergence: float
-    points: tuple[LatentTsnePoint, ...]
+    n_neighbors: int
+    min_dist: float
+    initial_cross_entropy: float
+    final_cross_entropy: float
+    graph_edge_count: int
+    spectral_gap: float
+    age_x: float
+    age_y: float
+    points: tuple[LatentUmapPoint, ...]
 
     def __post_init__(self) -> None:
         if (
@@ -235,24 +265,160 @@ class LatentTsnePanel:
             or self.lambda_age <= 0.0
             or self.source_count < len(self.points)
             or self.count_per_context <= 0
-            or self.perplexity <= 0.0
-            or self.perplexity >= len(self.points)
+            or self.n_neighbors < 2
+            or self.n_neighbors >= len(self.points) + 1
+            or self.min_dist < 0.0
+            or self.graph_edge_count <= 0
         ):
-            raise ValueError("t-SNE dimensions, counts, and perplexity are inconsistent")
-        _finite(self.lambda_age, "t-SNE lambda")
-        _finite(self.perplexity, "t-SNE perplexity")
-        _finite(self.final_kl_divergence, "t-SNE KL divergence")
-        if self.final_kl_divergence < 0.0:
-            raise ValueError("t-SNE KL divergence must be non-negative")
+            raise ValueError("UMAP dimensions, counts, and graph settings are inconsistent")
+        for name, value in (
+            ("UMAP lambda", self.lambda_age),
+            ("UMAP min_dist", self.min_dist),
+            ("UMAP initial cross entropy", self.initial_cross_entropy),
+            ("UMAP final cross entropy", self.final_cross_entropy),
+            ("UMAP spectral gap", self.spectral_gap),
+            ("UMAP age x", self.age_x),
+            ("UMAP age y", self.age_y),
+        ):
+            _finite(value, name)
+        if (
+            self.initial_cross_entropy <= 0.0
+            or self.final_cross_entropy <= 0.0
+            or self.final_cross_entropy >= self.initial_cross_entropy
+            or self.spectral_gap <= 0.0
+        ):
+            raise ValueError("UMAP optimization and spectral diagnostics are inconsistent")
         expected_count = self.count_per_context * len(GenomicContext)
         if len(self.points) != expected_count:
-            raise ValueError("t-SNE points must have the declared balanced context count")
+            raise ValueError("UMAP points must have the declared balanced context count")
         contexts = tuple(point.context for point in self.points)
         if any(contexts.count(context) != self.count_per_context for context in GenomicContext):
-            raise ValueError("t-SNE points must be exactly balanced across genomic contexts")
+            raise ValueError("UMAP points must be exactly balanced across genomic contexts")
         probe_ids = tuple(point.probe_id for point in self.points)
         if len(set(probe_ids)) != len(probe_ids):
-            raise ValueError("t-SNE panel contains duplicate probe IDs")
+            raise ValueError("UMAP panel contains duplicate probe IDs")
+
+
+@dataclass(frozen=True, slots=True)
+class ContextClusterCounts:
+    context: GenomicContext
+    negative_count: int
+    positive_count: int
+
+    def __post_init__(self) -> None:
+        if self.negative_count < 0 or self.positive_count < 0:
+            raise ValueError("context cluster counts must be non-negative")
+        if self.negative_count + self.positive_count == 0:
+            raise ValueError("each context must contain at least one audited probe")
+
+
+@dataclass(frozen=True, slots=True)
+class AgeClusterDiagnostic:
+    window_size: int
+    model: str
+    source_count: int
+    negative_count: int
+    positive_count: int
+    negative_empirical_center: float
+    negative_prediction_center: float
+    positive_empirical_center: float
+    positive_prediction_center: float
+    context_cramer_v: float
+    design_cramer_v: float
+    strand_cramer_v: float
+    chromosome_cramer_v: float | None
+    chromosome_status: str
+    cpg_density_cohen_d: float
+    gc_content_cohen_d: float
+    female_sample_count: int
+    male_sample_count: int
+    female_negative_mean: float
+    female_positive_mean: float
+    female_separation_cohen_d: float
+    male_negative_mean: float
+    male_positive_mean: float
+    male_separation_cohen_d: float
+    female_male_target_pearson: float
+    context_counts: tuple[ContextClusterCounts, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            self.window_size <= 0
+            or self.model not in _AGE_CLUSTER_MODELS
+            or self.source_count <= 0
+            or self.negative_count <= 0
+            or self.positive_count <= 0
+            or self.negative_count + self.positive_count != self.source_count
+            or self.female_sample_count <= 0
+            or self.male_sample_count <= 0
+        ):
+            raise ValueError("age-cluster identity and counts are inconsistent")
+        correlations = (
+            self.negative_empirical_center,
+            self.negative_prediction_center,
+            self.positive_empirical_center,
+            self.positive_prediction_center,
+            self.female_negative_mean,
+            self.female_positive_mean,
+            self.male_negative_mean,
+            self.male_positive_mean,
+            self.female_male_target_pearson,
+        )
+        if any(not math.isfinite(value) or not -1.0 <= value <= 1.0 for value in correlations):
+            raise ValueError("age-cluster centers and subgroup correlations must be bounded")
+        if self.negative_empirical_center >= self.positive_empirical_center:
+            raise ValueError("age clusters must be ordered by empirical age association")
+        effects = (
+            self.context_cramer_v,
+            self.design_cramer_v,
+            self.strand_cramer_v,
+        )
+        if any(not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in effects):
+            raise ValueError("age-cluster Cramer's V values must lie in [0,1]")
+        if self.chromosome_status == "defined":
+            if self.chromosome_cramer_v is None or not 0.0 <= self.chromosome_cramer_v <= 1.0:
+                raise ValueError("defined chromosome association requires bounded Cramer's V")
+        elif (
+            self.chromosome_status != "not_testable_single_level"
+            or self.chromosome_cramer_v is not None
+        ):
+            raise ValueError("chromosome association status and value are inconsistent")
+        continuous = (
+            self.cpg_density_cohen_d,
+            self.gc_content_cohen_d,
+            self.female_separation_cohen_d,
+            self.male_separation_cohen_d,
+        )
+        if any(not math.isfinite(value) for value in continuous):
+            raise ValueError("age-cluster continuous contrasts must be finite")
+        if self.female_separation_cohen_d <= 0.0 or self.male_separation_cohen_d <= 0.0:
+            raise ValueError("both sex strata must preserve positive cluster separation")
+        if (
+            len(self.context_counts) != len(GenomicContext)
+            or {point.context for point in self.context_counts} != set(GenomicContext)
+            or sum(point.negative_count for point in self.context_counts) != self.negative_count
+            or sum(point.positive_count for point in self.context_counts) != self.positive_count
+        ):
+            raise ValueError("context cluster counts must exactly partition both clusters")
+
+
+@dataclass(frozen=True, slots=True)
+class AgeClusterAgreement:
+    window_size: int
+    source_count: int
+    permutation_invariant_fraction: float
+    adjusted_rand_index: float
+
+    def __post_init__(self) -> None:
+        if self.window_size <= 0 or self.source_count <= 0:
+            raise ValueError("cluster-agreement window and source count must be positive")
+        if (
+            not math.isfinite(self.permutation_invariant_fraction)
+            or not 0.5 <= self.permutation_invariant_fraction <= 1.0
+            or not math.isfinite(self.adjusted_rand_index)
+            or not -1.0 <= self.adjusted_rand_index <= 1.0
+        ):
+            raise ValueError("cluster-agreement statistics are outside their bounds")
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +433,9 @@ class InterimSiteData:
     split_sha256: str
     retained_probe_count: int
     retained_sample_count: int
+    female_sample_count: int
+    male_sample_count: int
+    cell_composition_status: str
     completed_windows: tuple[int, ...]
     planned_windows: tuple[int, ...]
     latent_dimensions: tuple[int, ...]
@@ -278,7 +447,9 @@ class InterimSiteData:
     primary_age_metrics: tuple[AgeMetricPoint, ...]
     exploratory_age_metrics: tuple[ExploratoryAgeMetricPoint, ...]
     scatter_panels: tuple[CorrelationScatterPanel, ...]
-    latent_tsne_panels: tuple[LatentTsnePanel, ...]
+    age_cluster_diagnostics: tuple[AgeClusterDiagnostic, ...]
+    age_cluster_agreements: tuple[AgeClusterAgreement, ...]
+    latent_umap_panels: tuple[LatentUmapPanel, ...]
     exploratory_uniform_metrics: tuple[ExploratoryMetricPoint, ...]
     exploratory_distance_metrics: tuple[ExploratoryMetricPoint, ...]
     kernel_weights: tuple[KernelWeightPoint, ...]
@@ -295,6 +466,14 @@ class InterimSiteData:
             raise ValueError("interim site requires lowercase SHA-256 fingerprints")
         if self.retained_probe_count <= 0 or self.retained_sample_count <= 1:
             raise ValueError("interim site requires positive probes and at least two samples")
+        if (
+            self.female_sample_count <= 0
+            or self.male_sample_count <= 0
+            or self.female_sample_count + self.male_sample_count != self.retained_sample_count
+            or self.cell_composition_status
+            != "not_testable_no_measured_or_precomputed_cell_proportions"
+        ):
+            raise ValueError("interim phenotype audit counts or cell-composition status differ")
         axes = (
             self.completed_windows,
             self.planned_windows,
@@ -314,7 +493,9 @@ class InterimSiteData:
             self.primary_age_metrics,
             self.exploratory_age_metrics,
             self.scatter_panels,
-            self.latent_tsne_panels,
+            self.age_cluster_diagnostics,
+            self.age_cluster_agreements,
+            self.latent_umap_panels,
             self.exploratory_uniform_metrics,
             self.exploratory_distance_metrics,
             self.kernel_weights,
@@ -353,18 +534,18 @@ class InterimSiteData:
         projection_dimensions = tuple(
             dimension for dimension in self.latent_dimensions if dimension <= 128
         )
-        tsne_keys = tuple(
+        umap_keys = tuple(
             (point.window_size, point.latent_dimension, point.lambda_age)
-            for point in self.latent_tsne_panels
+            for point in self.latent_umap_panels
         )
-        expected_tsne = {
+        expected_umap = {
             (window, dimension, 0.1) for window in windows for dimension in projection_dimensions
         }
-        if len(set(tsne_keys)) != len(tsne_keys) or set(tsne_keys) != expected_tsne:
-            raise ValueError("t-SNE panels must cover every dimension through 128 at lambda 0.1")
+        if len(set(umap_keys)) != len(umap_keys) or set(umap_keys) != expected_umap:
+            raise ValueError("UMAP panels must cover every dimension through 128 at lambda 0.1")
         point_identity = tuple(
             (point.probe_id, point.chromosome, point.position, point.context)
-            for point in self.latent_tsne_panels[0].points
+            for point in self.latent_umap_panels[0].points
         )
         if any(
             tuple(
@@ -372,9 +553,48 @@ class InterimSiteData:
                 for point in panel.points
             )
             != point_identity
-            for panel in self.latent_tsne_panels[1:]
+            for panel in self.latent_umap_panels[1:]
         ):
-            raise ValueError("every t-SNE panel must use the same ordered validation loci")
+            raise ValueError("every UMAP panel must use the same ordered validation loci")
+        cluster_keys = tuple(
+            (point.window_size, point.model) for point in self.age_cluster_diagnostics
+        )
+        expected_clusters = {(window, model) for window in windows for model in _AGE_CLUSTER_MODELS}
+        if len(set(cluster_keys)) != len(cluster_keys) or set(cluster_keys) != expected_clusters:
+            raise ValueError("age-cluster diagnostics must cover every model and completed window")
+        agreement_windows = tuple(point.window_size for point in self.age_cluster_agreements)
+        if (
+            len(set(agreement_windows)) != len(agreement_windows)
+            or set(agreement_windows) != windows
+        ):
+            raise ValueError("age-cluster agreement must cover every completed window once")
+        for window in windows:
+            diagnostics = tuple(
+                point for point in self.age_cluster_diagnostics if point.window_size == window
+            )
+            agreements = tuple(
+                point for point in self.age_cluster_agreements if point.window_size == window
+            )
+            if (
+                {point.source_count for point in diagnostics} != {agreements[0].source_count}
+                or {point.female_sample_count for point in diagnostics}
+                != {self.female_sample_count}
+                or {point.male_sample_count for point in diagnostics} != {self.male_sample_count}
+            ):
+                raise ValueError("age-cluster source and phenotype counts differ across panels")
+            scatter = next(
+                point
+                for point in self.scatter_panels
+                if point.window_size == window and point.population == "age"
+            )
+            diagnostics_by_model = {point.model: point for point in diagnostics}
+            for series in scatter.clusters:
+                diagnostic = diagnostics_by_model[series.model]
+                if (
+                    series.labels.count(0) > diagnostic.negative_count
+                    or series.labels.count(1) > diagnostic.positive_count
+                ):
+                    raise ValueError("scatter cluster sample counts exceed the full audit counts")
         tuning_keys = tuple(
             (point.window_size, point.latent_dimension, point.lambda_age)
             for point in self.tuning_sweep
