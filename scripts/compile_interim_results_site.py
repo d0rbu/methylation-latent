@@ -44,6 +44,7 @@ _POPULATIONS = (
     PairPopulation.HELD_OUT_BY_HELD_OUT,
 )
 _STAGES = ("sequence_features", "caduceus_age_only", "full_latent_metric")
+_PRIMARY_REPRODUCTION_MAX_ULPS = 8
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -339,26 +340,31 @@ def _assert_primary_distance_alignment(
     row: dict[str, object],
 ) -> None:
     sequence = _object(row, "sequence")
-    observed = (
-        _integer(sequence, "count"),
-        _number(sequence, "target_mean"),
-        _number(sequence, "prediction_mean"),
-        _number(sequence, "mse"),
-        _number(sequence, "pearson"),
-        _number(sequence, "r_squared"),
-        _number(row, "registered_distance_mean"),
+    if _integer(sequence, "count") != primary.count:
+        raise ValueError("exploratory distance row count differs from the primary record")
+    values = (
+        ("target_mean", _number(sequence, "target_mean"), primary.target_mean),
+        ("prediction_mean", _number(sequence, "prediction_mean"), primary.prediction_mean),
+        ("mse", _number(sequence, "mse"), primary.mse),
+        ("pearson", _number(sequence, "pearson"), primary.pearson),
+        ("r_squared", _number(sequence, "r_squared"), primary.r_squared),
+        (
+            "registered_distance_mean",
+            _number(row, "registered_distance_mean"),
+            primary.distance_baseline_mean,
+        ),
     )
-    expected = (
-        primary.count,
-        primary.target_mean,
-        primary.prediction_mean,
-        primary.mse,
-        primary.pearson,
-        primary.r_squared,
-        primary.distance_baseline_mean,
-    )
-    if observed != expected:
-        raise ValueError("exploratory distance row does not reproduce primary sequence metrics")
+    for name, observed, expected in values:
+        tolerance = _PRIMARY_REPRODUCTION_MAX_ULPS * max(
+            math.ulp(observed),
+            math.ulp(expected),
+        )
+        if abs(observed - expected) > tolerance:
+            raise ValueError(
+                "exploratory distance row exceeds the primary reproduction bound: "
+                f"field={name}, observed={observed}, expected={expected}, "
+                f"absolute_difference={abs(observed - expected)}, tolerance={tolerance}"
+            )
 
 
 def _distance_integration_points(

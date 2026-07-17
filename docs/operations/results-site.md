@@ -42,8 +42,9 @@ uv run python scripts/compile_interim_results_site.py \
 ```
 
 Both output directories must be absent. The compiler verifies the sealed data and split identity,
-all candidate hashes, the selected configuration, exact reproduction of primary sequence metrics,
-and the deterministic exploratory runtime contract before writing any split page.
+all candidate hashes, the selected configuration, primary sequence-metric reproduction within an
+explicit eight-ULP bound, and the deterministic exploratory runtime contract before writing any
+split page. The ULP allowance covers independently ordered float64 reductions; counts remain exact.
 
 ## Compile
 
