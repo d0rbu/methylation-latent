@@ -34,6 +34,10 @@ The selected tuning checkpoint supplies validation sequence latents; it was trai
 optimization partition. The weights are then frozen and applied to the complete-train refit on the
 existing uniform and distance-stratified test pair caches. No test target enters weight fitting.
 
+The producer forces deterministic Torch algorithms and one CPU intra-op and inter-op thread before
+loading artifacts. This is intentionally slower: exact restart identity is part of the artifact
+contract, and threaded least-squares reductions can otherwise differ in their final floating bits.
+
 This preserves the mechanical train/validation/test boundary, but it does not undo the post-hoc
 origin of the hypothesis. Results use a separate schema and output tree and cannot populate the
 primary-validated site panels.

@@ -54,7 +54,7 @@ from methylation_latent.model import LatentMetric
 from methylation_latent.storage import EmbeddingMatrix, load_exact_safetensors, load_target_geometry
 from methylation_latent.targets import TargetGeometry
 
-_SCHEMA = "methylation-latent.exploratory-distance-integration.v1"
+_SCHEMA = "methylation-latent.exploratory-distance-integration.v2"
 _EVALUATION_SCHEMA = "methylation-latent.held-out-evaluation.v2"
 _SELECTION_SCHEMA = "methylation-latent.hyperparameter-selection.v2"
 _TUNING_SCHEMA = "methylation-latent.latent-tuning-run.v2"
@@ -62,6 +62,13 @@ _FINAL_SCHEMA = "methylation-latent.final-refit.v2"
 _MODEL_KEYS = {"age_direction", "projection.weight"}
 _LENGTH_SCALES = (1_024, 4_096, 16_384, 65_536, 262_144, 1_048_576, 4_194_304)
 _SPLITS = ("diverse-blocks", "held-out-chromosome")
+
+
+def _configure_deterministic_cpu() -> None:
+    """Make restart identity independent of threaded reduction order."""
+    t.set_num_threads(1)
+    t.set_num_interop_threads(1)
+    t.use_deterministic_algorithms(True)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -111,7 +118,11 @@ def _nullable_pearson_metric_json(
     target: t.Tensor,
     prediction: t.Tensor,
 ) -> dict[str, JsonValue]:
-    if target.dtype != t.float64 or prediction.dtype != t.float64 or target.shape != prediction.shape:
+    if (
+        target.dtype != t.float64
+        or prediction.dtype != t.float64
+        or target.shape != prediction.shape
+    ):
         raise TypeError("nullable-Pearson metric vectors must be aligned float64 tensors")
     target_centered = target - target.mean()
     prediction_centered = prediction - prediction.mean()
@@ -124,8 +135,7 @@ def _nullable_pearson_metric_json(
     if float(prediction_ss.item()) != 0.0:
         pearson = float(
             (
-                t.sum(target_centered * prediction_centered)
-                / t.sqrt(target_ss * prediction_ss)
+                t.sum(target_centered * prediction_centered) / t.sqrt(target_ss * prediction_ss)
             ).item()
         )
     return {
@@ -162,7 +172,9 @@ def _load_model(directory: Path, *, schema: str) -> tuple[LatentMetric, dict[str
     return model, metadata
 
 
-def _model_latent(model: LatentMetric, embeddings: EmbeddingMatrix, indices: t.Tensor | None) -> t.Tensor:
+def _model_latent(
+    model: LatentMetric, embeddings: EmbeddingMatrix, indices: t.Tensor | None
+) -> t.Tensor:
     values = embeddings.tensor if indices is None else embeddings.tensor.index_select(0, indices)
     with t.inference_mode():
         latent = model.latent(values.to(device="cpu", dtype=t.float32))
@@ -332,9 +344,7 @@ def _expected_pair_identity(
         target_sha256=target_sha256,
         split_name=split_name,
         split_sha256=split_sha256,
-        probe_order_sha256=sha256_ordered_strings(
-            str(probe.probe_id) for probe in probes.probes
-        ),
+        probe_order_sha256=sha256_ordered_strings(str(probe.probe_id) for probe in probes.probes),
     )
 
 
@@ -510,6 +520,12 @@ def _run_one(
             "Designed after inspecting the 1 kb and 4 kb primary test metrics; weights use only "
             "nested validation targets, but test results remain exploratory."
         ),
+        "runtime": {
+            "device": "cpu",
+            "torch_deterministic_algorithms": True,
+            "torch_num_threads": t.get_num_threads(),
+            "torch_num_interop_threads": t.get_num_interop_threads(),
+        },
         "identity": {
             "code_git_commit": code_git_commit,
             "primary_git_commit": primary_git_commit,
@@ -560,6 +576,7 @@ def _run_one(
 
 def main() -> None:
     arguments = _parser().parse_args()
+    _configure_deterministic_cpu()
     code_git_commit = require_clean_git_commit(Path(__file__).resolve().parents[1])
     config = load_protocol_config(arguments.config)
     if config.status != "frozen":
@@ -572,7 +589,10 @@ def main() -> None:
     )
     probes = load_probe_table(arguments.data / "probes.tsv")
     targets = load_target_geometry(arguments.data / "targets.safetensors")
-    if len(probes) != bundle.retained_probes or targets.methylation.n_samples != bundle.retained_samples:
+    if (
+        len(probes) != bundle.retained_probes
+        or targets.methylation.n_samples != bundle.retained_samples
+    ):
         raise ValueError("sealed data dimensions differ from exploratory inputs")
     configured_windows = {int(window): window for window in config.splits.window_sizes}
     requested_windows = tuple(arguments.windows)
