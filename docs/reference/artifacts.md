@@ -39,6 +39,7 @@ A finalized cache cannot accept another shard.
 | `site-data.v1` | complete split-specific panels and all contributing artifact IDs |
 | `interim-site-data.v1` | completed-window primary panels plus nested-validation sweeps and separately labeled post-hoc analyses; cannot substitute for `site-data.v1` |
 | `exploratory-distance-integration.v2` | post-hoc validation-fitted PSD distance/sequence mixture with a deterministic single-thread CPU runtime; never primary-validated |
+| `exploratory-direct-tanh-age.v1` | post-hoc direct `tanh(v·embedding+b)` age baseline with no latent dimension or lambda; never primary-validated on the viewed test partitions |
 
 ## Identity rules
 

@@ -80,5 +80,9 @@ the separate interim-site schema, exposes every completed full-model candidate o
 validation metrics, and labels distance integration as post-hoc. It does not relax the primary
 compiler's all-window or 16-kb-projection requirements.
 
+`run_direct_tanh_age.py` produces the corrected direct-scalar age baseline in a separate post-hoc
+artifact tree. It has no latent-dimension or lambda axes and cannot replace the original frozen
+age-only record in place.
+
 Large artifacts live outside Git. Git contains protocol, code, tests, templates, and compact
 validated result summaries only.
