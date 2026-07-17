@@ -11,6 +11,10 @@ GSE87571 IDATs; references to the unavailable GSE40279 primary run are historica
   prior work
 - [`research/exploratory-distance-integration.md`](research/exploratory-distance-integration.md)
   — post-hoc PSD distance-plus-sequence kernel analysis and leakage boundary
+- [`research/exploratory-direct-tanh-age.md`](research/exploratory-direct-tanh-age.md)
+  — post-hoc direct scalar age baseline
+- [`research/exploratory-latent-tsne.md`](research/exploratory-latent-tsne.md)
+  — post-hoc validation-only latent-space visualization
 
 ## Pipelines
 
