@@ -21,7 +21,7 @@ from methylation_latent.domain import (
 from methylation_latent.evaluation import DISTANCE_CLASS_LABELS, PairPopulation
 from methylation_latent.site import AgeMetricPoint, DistanceMetricPoint, WindowSweepPoint
 
-INTERIM_SITE_SCHEMA = "methylation-latent.interim-site-data.v4"
+INTERIM_SITE_SCHEMA = "methylation-latent.interim-site-data.v5"
 EXPLORATORY_MODELS = frozenset(
     {
         "sequence",
@@ -253,18 +253,27 @@ class CorrelationScatterPanel:
 
 
 @dataclass(frozen=True, slots=True)
-class LatentUmapPoint:
+class LatentSpherePoint:
     annotation: ProbeDisplayAnnotation
     x: float
     y: float
+    z: float
 
     def __post_init__(self) -> None:
-        _finite(self.x, "UMAP x")
-        _finite(self.y, "UMAP y")
+        _finite(self.x, "sphere x")
+        _finite(self.y, "sphere y")
+        _finite(self.z, "sphere z")
+        if not math.isclose(
+            self.x * self.x + self.y * self.y + self.z * self.z,
+            1.0,
+            rel_tol=0.0,
+            abs_tol=5.0e-15,
+        ):
+            raise ValueError("latent-sphere point must have exact unit geometry within tolerance")
 
 
 @dataclass(frozen=True, slots=True)
-class LatentUmapPanel:
+class LatentSpherePanel:
     window_size: int
     latent_dimension: int
     lambda_age: float
@@ -278,7 +287,13 @@ class LatentUmapPanel:
     spectral_gap: float
     age_x: float
     age_y: float
-    points: tuple[LatentUmapPoint, ...]
+    age_z: float
+    geodesic_stress: float
+    geodesic_distance_pearson: float
+    neighbor_recall: float
+    neighbor_count: int
+    selected_step: int
+    points: tuple[LatentSpherePoint, ...]
 
     def __post_init__(self) -> None:
         if (
@@ -291,16 +306,22 @@ class LatentUmapPanel:
             or self.n_neighbors >= len(self.points) + 1
             or self.min_dist < 0.0
             or self.graph_edge_count <= 0
+            or self.neighbor_count != self.n_neighbors - 1
+            or self.selected_step <= 0
         ):
-            raise ValueError("UMAP dimensions, counts, and graph settings are inconsistent")
+            raise ValueError("spherical UMAP dimensions, counts, and settings are inconsistent")
         for name, value in (
-            ("UMAP lambda", self.lambda_age),
-            ("UMAP min_dist", self.min_dist),
-            ("UMAP initial cross entropy", self.initial_cross_entropy),
-            ("UMAP final cross entropy", self.final_cross_entropy),
-            ("UMAP spectral gap", self.spectral_gap),
-            ("UMAP age x", self.age_x),
-            ("UMAP age y", self.age_y),
+            ("spherical UMAP lambda", self.lambda_age),
+            ("spherical UMAP min_dist", self.min_dist),
+            ("spherical UMAP initial cross entropy", self.initial_cross_entropy),
+            ("spherical UMAP final cross entropy", self.final_cross_entropy),
+            ("spherical UMAP spectral gap", self.spectral_gap),
+            ("spherical UMAP age x", self.age_x),
+            ("spherical UMAP age y", self.age_y),
+            ("spherical UMAP age z", self.age_z),
+            ("spherical UMAP geodesic stress", self.geodesic_stress),
+            ("spherical UMAP geodesic-distance Pearson", self.geodesic_distance_pearson),
+            ("spherical UMAP neighbor recall", self.neighbor_recall),
         ):
             _finite(value, name)
         if (
@@ -309,16 +330,31 @@ class LatentUmapPanel:
             or self.final_cross_entropy >= self.initial_cross_entropy
             or self.spectral_gap <= 0.0
         ):
-            raise ValueError("UMAP optimization and spectral diagnostics are inconsistent")
+            raise ValueError(
+                "spherical UMAP optimization and spectral diagnostics are inconsistent"
+            )
+        if self.geodesic_stress < 0.0:
+            raise ValueError("spherical UMAP geodesic stress must be non-negative")
+        if not -1.0 <= self.geodesic_distance_pearson <= 1.0:
+            raise ValueError("spherical UMAP geodesic-distance Pearson must be bounded")
+        if not 0.0 <= self.neighbor_recall <= 1.0:
+            raise ValueError("spherical UMAP neighbor recall must be bounded")
+        if not math.isclose(
+            self.age_x * self.age_x + self.age_y * self.age_y + self.age_z * self.age_z,
+            1.0,
+            rel_tol=0.0,
+            abs_tol=5.0e-15,
+        ):
+            raise ValueError("spherical UMAP age direction must have unit geometry")
         expected_count = self.count_per_context * len(GenomicContext)
         if len(self.points) != expected_count:
-            raise ValueError("UMAP points must have the declared balanced context count")
+            raise ValueError("spherical UMAP points must have the balanced context count")
         contexts = tuple(point.annotation.context for point in self.points)
         if any(contexts.count(context) != self.count_per_context for context in GenomicContext):
-            raise ValueError("UMAP points must be exactly balanced across genomic contexts")
+            raise ValueError("spherical UMAP points must be balanced across genomic contexts")
         probe_ids = tuple(point.annotation.probe_id for point in self.points)
         if len(set(probe_ids)) != len(probe_ids):
-            raise ValueError("UMAP panel contains duplicate probe IDs")
+            raise ValueError("spherical UMAP panel contains duplicate probe IDs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,7 +507,7 @@ class InterimSiteData:
     scatter_panels: tuple[CorrelationScatterPanel, ...]
     age_cluster_diagnostics: tuple[AgeClusterDiagnostic, ...]
     age_cluster_agreements: tuple[AgeClusterAgreement, ...]
-    latent_umap_panels: tuple[LatentUmapPanel, ...]
+    latent_sphere_panels: tuple[LatentSpherePanel, ...]
     exploratory_uniform_metrics: tuple[ExploratoryMetricPoint, ...]
     exploratory_distance_metrics: tuple[ExploratoryMetricPoint, ...]
     kernel_weights: tuple[KernelWeightPoint, ...]
@@ -517,7 +553,7 @@ class InterimSiteData:
             self.scatter_panels,
             self.age_cluster_diagnostics,
             self.age_cluster_agreements,
-            self.latent_umap_panels,
+            self.latent_sphere_panels,
             self.exploratory_uniform_metrics,
             self.exploratory_distance_metrics,
             self.kernel_weights,
@@ -556,33 +592,35 @@ class InterimSiteData:
         projection_dimensions = tuple(
             dimension for dimension in self.latent_dimensions if dimension <= 128
         )
-        umap_keys = tuple(
+        sphere_keys = tuple(
             (point.window_size, point.latent_dimension, point.lambda_age)
-            for point in self.latent_umap_panels
+            for point in self.latent_sphere_panels
         )
-        expected_umap = {
+        expected_spheres = {
             (window, dimension, 0.1) for window in windows for dimension in projection_dimensions
         }
-        if len(set(umap_keys)) != len(umap_keys) or set(umap_keys) != expected_umap:
-            raise ValueError("UMAP panels must cover every dimension through 128 at lambda 0.1")
+        if len(set(sphere_keys)) != len(sphere_keys) or set(sphere_keys) != expected_spheres:
+            raise ValueError(
+                "spherical UMAP panels must cover every dimension through 128 at lambda 0.1"
+            )
         point_identity = tuple(
-            point.annotation.locus_identity for point in self.latent_umap_panels[0].points
+            point.annotation.locus_identity for point in self.latent_sphere_panels[0].points
         )
         if any(
             tuple(point.annotation.locus_identity for point in panel.points) != point_identity
-            for panel in self.latent_umap_panels[1:]
+            for panel in self.latent_sphere_panels[1:]
         ):
-            raise ValueError("every UMAP panel must use the same ordered validation loci")
+            raise ValueError("every spherical UMAP panel must use the same validation loci")
         for window in windows:
             panels = tuple(
-                panel for panel in self.latent_umap_panels if panel.window_size == window
+                panel for panel in self.latent_sphere_panels if panel.window_size == window
             )
             first_annotations = tuple(point.annotation for point in panels[0].points)
             if any(
                 tuple(point.annotation for point in panel.points) != first_annotations
                 for panel in panels[1:]
             ):
-                raise ValueError("UMAP annotations must be identical within each window")
+                raise ValueError("spherical UMAP annotations must be identical within each window")
         cluster_keys = tuple(
             (point.window_size, point.model) for point in self.age_cluster_diagnostics
         )

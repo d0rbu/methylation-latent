@@ -445,39 +445,223 @@ const drawStar = (context, x, y, outerRadius = 9, innerRadius = 4) => {
   context.stroke();
 };
 
-const drawUmapCanvas = (points, agePoint, pointColors, label) => {
-  if (!points.length) throw new Error(`${label} has no UMAP points`);
-  if (pointColors.length !== points.length) throw new Error(`${label} point colors differ`);
-  const [canvas, context, size] = canvasFrame(label, 360);
-  const margin = 18;
-  const allPoints = [...points, agePoint];
-  const xs = allPoints.map(point => point.x);
-  const ys = allPoints.map(point => point.y);
-  const xMin = Math.min(...xs);
-  const xMax = Math.max(...xs);
-  const yMin = Math.min(...ys);
-  const yMax = Math.max(...ys);
-  if (xMin === xMax || yMin === yMax) throw new Error(`${label} has a collapsed UMAP axis`);
-  const x = value => margin + (size - 2 * margin) * (value - xMin) / (xMax - xMin);
-  const y = value => size - margin - (size - 2 * margin) * (value - yMin) / (yMax - yMin);
-  context.fillStyle = "#fffdf8";
-  context.fillRect(0, 0, size, size);
-  context.strokeStyle = "#d7d5ca";
-  context.strokeRect(margin, margin, size - 2 * margin, size - 2 * margin);
-  points.forEach((point, index) => {
-    context.beginPath();
-    context.arc(x(point.x), y(point.y), 2.8, 0, 2 * Math.PI);
-    context.fillStyle = pointColors[index];
-    context.globalAlpha = 0.72;
-    context.fill();
-  });
-  context.globalAlpha = 1;
-  drawStar(context, x(agePoint.x), y(agePoint.y));
-  return canvas;
+const rotateSpherePoint = (point, yaw, pitch) => {
+  const cosineYaw = Math.cos(yaw);
+  const sineYaw = Math.sin(yaw);
+  const cosinePitch = Math.cos(pitch);
+  const sinePitch = Math.sin(pitch);
+  const yawX = cosineYaw * point.x + sineYaw * point.z;
+  const yawZ = -sineYaw * point.x + cosineYaw * point.z;
+  return {
+    x: yawX,
+    y: cosinePitch * point.y - sinePitch * yawZ,
+    z: sinePitch * point.y + cosinePitch * yawZ,
+  };
 };
 
-const drawLatentUmap = panels => {
-  const node = document.querySelector("#latent-umap");
+const assertUnitSpherePoint = (point, label) => {
+  const values = [point.x, point.y, point.z].map(Number);
+  const squaredNorm = values.reduce((total, value) => total + value * value, 0);
+  if (values.some(value => !Number.isFinite(value)) || Math.abs(squaredNorm - 1) > 1e-10) {
+    throw new Error(`${label} is not a finite unit-sphere point`);
+  }
+};
+
+const drawSphereGrid = (context, rotate, project) => {
+  const curves = [];
+  for (let longitudeIndex = 0; longitudeIndex < 12; longitudeIndex += 1) {
+    const longitude = longitudeIndex * Math.PI / 6;
+    curves.push(Array.from({ length: 49 }, (_, index) => {
+      const latitude = -Math.PI / 2 + index * Math.PI / 48;
+      return {
+        x: Math.cos(latitude) * Math.cos(longitude),
+        y: Math.sin(latitude),
+        z: Math.cos(latitude) * Math.sin(longitude),
+      };
+    }));
+  }
+  [-60, -30, 0, 30, 60].forEach(latitudeDegrees => {
+    const latitude = latitudeDegrees * Math.PI / 180;
+    curves.push(Array.from({ length: 73 }, (_, index) => {
+      const longitude = index * 2 * Math.PI / 72;
+      return {
+        x: Math.cos(latitude) * Math.cos(longitude),
+        y: Math.sin(latitude),
+        z: Math.cos(latitude) * Math.sin(longitude),
+      };
+    }));
+  });
+  curves.forEach(curve => {
+    const rotated = curve.map(rotate);
+    for (let index = 1; index < rotated.length; index += 1) {
+      const first = project(rotated[index - 1]);
+      const second = project(rotated[index]);
+      const front = (rotated[index - 1].z + rotated[index].z) / 2;
+      context.beginPath();
+      context.moveTo(first.x, first.y);
+      context.lineTo(second.x, second.y);
+      context.strokeStyle = front >= 0 ? "rgb(93 108 101 / 30%)" : "rgb(93 108 101 / 10%)";
+      context.lineWidth = front >= 0 ? 0.8 : 0.55;
+      context.stroke();
+    }
+  });
+};
+
+const interactiveSphereCanvas = (points, agePoint, initialColors, initialLabel) => {
+  if (!points.length) throw new Error(`${initialLabel} has no sphere points`);
+  points.forEach((point, index) => assertUnitSpherePoint(point, `${initialLabel} probe ${index}`));
+  assertUnitSpherePoint(agePoint, `${initialLabel} age direction`);
+  if (initialColors.length !== points.length) throw new Error(`${initialLabel} point colors differ`);
+  const [canvas, context, size] = canvasFrame(initialLabel, 360);
+  canvas.setAttribute("role", "application");
+  canvas.tabIndex = 0;
+  canvas.classList.add("interactive-sphere");
+  let pointColors = initialColors;
+  let label = initialLabel;
+  let yaw = -0.55;
+  let pitch = 0.25;
+  let zoom = 1.0;
+  let activePointer = null;
+  let previousX = 0;
+  let previousY = 0;
+  const reset = () => {
+    yaw = -0.55;
+    pitch = 0.25;
+    zoom = 1.0;
+  };
+  const draw = () => {
+    const center = size / 2;
+    const radius = size * 0.42 * zoom;
+    const rotate = point => rotateSpherePoint(point, yaw, pitch);
+    const project = point => ({ x: center + radius * point.x, y: center - radius * point.y });
+    context.clearRect(0, 0, size, size);
+    context.fillStyle = "#fffdf8";
+    context.fillRect(0, 0, size, size);
+    const sphereGradient = context.createRadialGradient(
+      center - radius * 0.28,
+      center - radius * 0.32,
+      radius * 0.05,
+      center,
+      center,
+      radius,
+    );
+    sphereGradient.addColorStop(0, "rgb(255 255 255 / 94%)");
+    sphereGradient.addColorStop(0.7, "rgb(226 239 234 / 65%)");
+    sphereGradient.addColorStop(1, "rgb(172 202 190 / 78%)");
+    context.beginPath();
+    context.arc(center, center, radius, 0, 2 * Math.PI);
+    context.fillStyle = sphereGradient;
+    context.fill();
+    context.save();
+    context.beginPath();
+    context.arc(center, center, radius, 0, 2 * Math.PI);
+    context.clip();
+    drawSphereGrid(context, rotate, project);
+    const displayPoints = points.map((point, index) => ({
+      point: rotate(point),
+      color: pointColors[index],
+      age: false,
+    }));
+    displayPoints.push({ point: rotate(agePoint), color: colors.age_direction, age: true });
+    displayPoints.sort((left, right) => left.point.z - right.point.z).forEach(item => {
+      const position = project(item.point);
+      const depth = (item.point.z + 1) / 2;
+      context.globalAlpha = 0.22 + 0.76 * depth;
+      if (item.age) {
+        drawStar(context, position.x, position.y, 7 + 3 * depth, 3 + 1.5 * depth);
+      } else {
+        context.beginPath();
+        context.arc(position.x, position.y, 1.8 + 2.1 * depth, 0, 2 * Math.PI);
+        context.fillStyle = item.color;
+        context.fill();
+      }
+    });
+    context.restore();
+    context.globalAlpha = 1;
+    context.beginPath();
+    context.arc(center, center, radius, 0, 2 * Math.PI);
+    context.strokeStyle = "#7e8983";
+    context.lineWidth = 1.2;
+    context.stroke();
+    canvas.dataset.yaw = String(yaw);
+    canvas.dataset.pitch = String(pitch);
+    canvas.dataset.zoom = String(zoom);
+  };
+  const updateLabel = () => {
+    canvas.setAttribute(
+      "aria-label",
+      `${label}. Drag to rotate; use arrow keys to rotate; plus or minus to zoom; R to reset.`,
+    );
+  };
+  canvas.addEventListener("pointerdown", event => {
+    activePointer = event.pointerId;
+    previousX = event.clientX;
+    previousY = event.clientY;
+    canvas.setPointerCapture(event.pointerId);
+    canvas.classList.add("dragging");
+  });
+  canvas.addEventListener("pointermove", event => {
+    if (event.pointerId !== activePointer) return;
+    yaw += (event.clientX - previousX) * 0.012;
+    pitch += (event.clientY - previousY) * 0.012;
+    previousX = event.clientX;
+    previousY = event.clientY;
+    draw();
+  });
+  const releasePointer = event => {
+    if (event.pointerId !== activePointer) return;
+    activePointer = null;
+    canvas.classList.remove("dragging");
+  };
+  canvas.addEventListener("pointerup", releasePointer);
+  canvas.addEventListener("pointercancel", releasePointer);
+  canvas.addEventListener("wheel", event => {
+    event.preventDefault();
+    zoom = Math.max(0.72, Math.min(1.12, zoom * Math.exp(-event.deltaY * 0.001)));
+    draw();
+  }, { passive: false });
+  canvas.addEventListener("keydown", event => {
+    const rotations = {
+      ArrowLeft: [-0.12, 0],
+      ArrowRight: [0.12, 0],
+      ArrowUp: [0, -0.12],
+      ArrowDown: [0, 0.12],
+    };
+    if (rotations[event.key]) {
+      yaw += rotations[event.key][0];
+      pitch += rotations[event.key][1];
+    } else if (event.key === "+" || event.key === "=") {
+      zoom = Math.min(1.12, zoom * 1.08);
+    } else if (event.key === "-" || event.key === "_") {
+      zoom = Math.max(0.72, zoom / 1.08);
+    } else if (event.key.toLowerCase() === "r") {
+      reset();
+    } else {
+      return;
+    }
+    event.preventDefault();
+    draw();
+  });
+  canvas.addEventListener("dblclick", () => {
+    reset();
+    draw();
+  });
+  updateLabel();
+  draw();
+  return {
+    canvas,
+    setColors: (nextColors, nextLabel) => {
+      if (nextColors.length !== points.length) throw new Error(`${nextLabel} point colors differ`);
+      pointColors = nextColors;
+      label = nextLabel;
+      updateLabel();
+      draw();
+    },
+  };
+};
+
+const drawLatentSpheres = panels => {
+  const node = document.querySelector("#latent-sphere");
   const windows = [...new Set(panels.map(panel => panel.window_size))].sort((a, b) => a - b);
   windows.forEach(window => {
     const card = article(`${windowLabel(window)} · λ = 0.1 · validation loci only`);
@@ -485,32 +669,37 @@ const drawLatentUmap = panels => {
     grid.className = "projection-grid";
     const windowPanels = panels.filter(panel => panel.window_size === window)
       .sort((a, b) => a.latent_dimension - b.latent_dimension);
-    if (!windowPanels.length) throw new Error(`missing UMAP panels for ${window}`);
+    if (!windowPanels.length) throw new Error(`missing spherical UMAP panels for ${window}`);
     const annotations = windowPanels[0].points.map(point => point.annotation);
+    const renderers = windowPanels.map(panel => {
+      const figure = plotFigure(`d = ${panel.latent_dimension}`);
+      const renderer = interactiveSphereCanvas(
+        panel.points,
+        { x: panel.age_x, y: panel.age_y, z: panel.age_z },
+        panel.points.map(point => colors[point.annotation.context]),
+        `${windowLabel(window)} d ${panel.latent_dimension} spherical UMAP colored by Genomic context with learned age direction`,
+      );
+      figure.append(
+        renderer.canvas,
+        plotNote(`stress ${metric(panel.geodesic_stress)} · geodesic-distance r ${metric(panel.geodesic_distance_pearson)} · ${panel.neighbor_count}-NN recall ${metric(panel.neighbor_recall)} · best step ${panel.selected_step}`),
+      );
+      grid.append(figure);
+      return { panel, renderer };
+    });
     const legendNode = document.createElement("div");
     const render = mode => {
       const scale = annotationColorScale(annotations, mode);
-      grid.replaceChildren(...windowPanels.map(panel => {
-        const pointColors = panel.points.map(point => scale.color(point.annotation));
-        const figure = plotFigure(`d = ${panel.latent_dimension}`);
-        figure.append(
-          drawUmapCanvas(
-            panel.points,
-            { x: panel.age_x, y: panel.age_y },
-            pointColors,
-            `${windowLabel(window)} d ${panel.latent_dimension} angular UMAP colored by ${annotationModeLabels[mode]} with learned age direction`,
-          ),
-          plotNote(`n = ${panel.points.length} probes + age · neighbors ${panel.n_neighbors} · min_dist ${panel.min_dist} · final cross-entropy ${metric(panel.final_cross_entropy, 5)}`),
-        );
-        return figure;
-      }));
+      renderers.forEach(({ panel, renderer }) => renderer.setColors(
+        panel.points.map(point => scale.color(point.annotation)),
+        `${windowLabel(window)} d ${panel.latent_dimension} spherical UMAP colored by ${annotationModeLabels[mode]} with learned age direction`,
+      ));
       drawAnnotationLegend(legendNode, scale, mode);
     };
     card.append(annotationColorControls(render), grid, legendNode);
     render("context");
     const ageLegend = document.createElement("p");
     ageLegend.className = "plot-note";
-    ageLegend.textContent = "★ learned age direction (included as a point in the angular-distance UMAP graph)";
+    ageLegend.textContent = "★ learned age direction · drag a sphere to rotate · scroll or +/− to zoom · double-click or R to reset";
     card.append(ageLegend);
     node.append(card);
   });
@@ -804,7 +993,7 @@ fetch("results.json", { cache: "no-store" })
     drawPrimaryDistance(data.primary_distance_metrics);
     drawIntegration(data.exploratory_uniform_metrics, data.kernel_weights);
     drawIntegratedDistance(data.exploratory_distance_metrics, data.primary_distance_metrics);
-    drawLatentUmap(data.latent_umap_panels);
+    drawLatentSpheres(data.latent_sphere_panels);
     const artifacts = document.querySelector("#artifacts");
     data.artifact_ids.forEach(identifier => {
       const item = document.createElement("li");

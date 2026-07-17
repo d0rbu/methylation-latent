@@ -51,6 +51,9 @@ figure { margin: 0; display: grid; gap: .45rem; justify-items: center; }
 .plot-title { justify-self: start; width: 100%; font-weight: 700; color: var(--ink); }
 .plot-note { margin: 0; color: var(--muted); font-size: .82rem; }
 canvas { display: block; max-width: 100%; height: auto !important; border-radius: 8px; }
+.interactive-sphere { cursor: grab; touch-action: none; outline: none; }
+.interactive-sphere.dragging { cursor: grabbing; }
+.interactive-sphere:focus-visible { box-shadow: 0 0 0 3px rgb(0 107 87 / 28%); }
 .empty { color: var(--muted); max-width: 72ch; }
 svg { width: 100%; min-width: 740px; height: 350px; }
 .axis { stroke: #7e8983; stroke-width: 1.2; }

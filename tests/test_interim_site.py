@@ -26,8 +26,8 @@ from methylation_latent.interim_site import (
     ExploratoryMetricPoint,
     InterimSiteData,
     KernelWeightPoint,
-    LatentUmapPanel,
-    LatentUmapPoint,
+    LatentSpherePanel,
+    LatentSpherePoint,
     ProbeDisplayAnnotation,
     ScatterPredictionSeries,
     TuningSweepPoint,
@@ -193,13 +193,22 @@ def _valid() -> InterimSiteData:
             for population in _POPULATIONS
         ),
     )
-    umap_points = tuple(
-        LatentUmapPoint(
+    sphere_coordinates = (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (-1.0, 0.0, 0.0),
+    )
+    sphere_points = tuple(
+        LatentSpherePoint(
             annotation=_annotation(index, context),
-            x=float(index),
-            y=float(-index),
+            x=coordinate[0],
+            y=coordinate[1],
+            z=coordinate[2],
         )
-        for index, context in enumerate(GenomicContext)
+        for index, (context, coordinate) in enumerate(
+            zip(GenomicContext, sphere_coordinates, strict=True)
+        )
     )
     return InterimSiteData(
         schema=INTERIM_SITE_SCHEMA,
@@ -231,8 +240,8 @@ def _valid() -> InterimSiteData:
             for model in ("cosine_age_only", "direct_tanh", "full_latent_metric")
         ),
         age_cluster_agreements=(AgeClusterAgreement(1024, 8, 0.95, 0.82),),
-        latent_umap_panels=(
-            LatentUmapPanel(
+        latent_sphere_panels=(
+            LatentSpherePanel(
                 window_size=1024,
                 latent_dimension=16,
                 lambda_age=0.1,
@@ -244,9 +253,15 @@ def _valid() -> InterimSiteData:
                 final_cross_entropy=0.5,
                 graph_edge_count=4,
                 spectral_gap=0.2,
-                age_x=0.5,
-                age_y=-0.5,
-                points=umap_points,
+                age_x=0.0,
+                age_y=-1.0,
+                age_z=0.0,
+                geodesic_stress=0.4,
+                geodesic_distance_pearson=0.6,
+                neighbor_recall=0.5,
+                neighbor_count=1,
+                selected_step=50,
+                points=sphere_points,
             ),
         ),
         exploratory_uniform_metrics=uniform,
@@ -422,10 +437,12 @@ def test_probe_display_annotation_rejects_invalid_sequence_features(
 
 def test_umap_point_and_panel_reject_invalid_geometry() -> None:
     data = _valid()
-    point = data.latent_umap_panels[0].points[0]
+    point = data.latent_sphere_panels[0].points[0]
     with pytest.raises(ValueError, match="finite"):
         replace(point, x=float("nan"))
-    panel = data.latent_umap_panels[0]
+    with pytest.raises(ValueError, match="unit geometry"):
+        replace(point, x=0.5)
+    panel = data.latent_sphere_panels[0]
     cases: tuple[tuple[dict[str, object], str], ...] = (
         ({"window_size": 0}, "inconsistent"),
         ({"source_count": 3}, "inconsistent"),
@@ -433,6 +450,12 @@ def test_umap_point_and_panel_reject_invalid_geometry() -> None:
         ({"final_cross_entropy": float("nan")}, "finite"),
         ({"final_cross_entropy": -0.1}, "optimization"),
         ({"final_cross_entropy": 2.0}, "optimization"),
+        ({"age_x": 0.5}, "unit geometry"),
+        ({"geodesic_stress": -0.1}, "non-negative"),
+        ({"geodesic_distance_pearson": 1.1}, "bounded"),
+        ({"neighbor_recall": 1.1}, "bounded"),
+        ({"neighbor_count": 2}, "inconsistent"),
+        ({"selected_step": 0}, "inconsistent"),
         ({"count_per_context": 2}, "balanced context count"),
         (
             {
@@ -490,7 +513,7 @@ def test_umap_point_and_panel_reject_invalid_geometry() -> None:
         ({"tuning_sweep": ()}, "every completed-results"),
         ({"scatter_panels": ()}, "every completed-results"),
         ({"age_cluster_diagnostics": ()}, "every completed-results"),
-        ({"latent_umap_panels": ()}, "every completed-results"),
+        ({"latent_sphere_panels": ()}, "every completed-results"),
     ],
 )
 def test_interim_envelope_rejects_invalid_state(change: dict[str, object], message: str) -> None:
@@ -559,8 +582,8 @@ def test_interim_cross_panel_contract_rejects_incomplete_or_duplicate_keys() -> 
             "scatter panels",
         ),
         (
-            "latent_umap_panels",
-            (replace(data.latent_umap_panels[0], lambda_age=1.0),),
+            "latent_sphere_panels",
+            (replace(data.latent_sphere_panels[0], lambda_age=1.0),),
             "through 128",
         ),
     )
@@ -571,7 +594,7 @@ def test_interim_cross_panel_contract_rejects_incomplete_or_duplicate_keys() -> 
 
 def test_interim_rejects_different_loci_across_umap_panels() -> None:
     data = _valid()
-    second = replace(data.latent_umap_panels[0], window_size=2048)
+    second = replace(data.latent_sphere_panels[0], window_size=2048)
     expanded = replace(
         data,
         completed_windows=(1024, 2048),
@@ -604,7 +627,7 @@ def test_interim_rejects_different_loci_across_umap_panels() -> None:
             *data.age_cluster_agreements,
             replace(data.age_cluster_agreements[0], window_size=2048),
         ),
-        latent_umap_panels=(data.latent_umap_panels[0], second),
+        latent_sphere_panels=(data.latent_sphere_panels[0], second),
         tuning_sweep=(
             data.tuning_sweep[0],
             replace(data.tuning_sweep[0], window_size=2048),
@@ -635,10 +658,10 @@ def test_interim_rejects_different_loci_across_umap_panels() -> None:
             *second.points[1:],
         ),
     )
-    with pytest.raises(ValueError, match="same ordered validation loci"):
+    with pytest.raises(ValueError, match="same validation loci"):
         replace(
             expanded,
-            latent_umap_panels=(data.latent_umap_panels[0], changed_second),
+            latent_sphere_panels=(data.latent_sphere_panels[0], changed_second),
         )
 
 

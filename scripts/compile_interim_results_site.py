@@ -42,8 +42,8 @@ from methylation_latent.interim_site import (
     ExploratoryMetricPoint,
     InterimSiteData,
     KernelWeightPoint,
-    LatentUmapPanel,
-    LatentUmapPoint,
+    LatentSpherePanel,
+    LatentSpherePoint,
     ProbeDisplayAnnotation,
     ScatterPredictionSeries,
     TuningSweepPoint,
@@ -58,7 +58,7 @@ _DISTANCE_SCHEMA = "methylation-latent.exploratory-distance-integration.v2"
 _DIRECT_AGE_SCHEMA = "methylation-latent.exploratory-direct-tanh-age.v1"
 _SCATTER_SCHEMA = "methylation-latent.prediction-scatter.v1"
 _CLUSTER_SCHEMA = "methylation-latent.age-scatter-cluster-audit.v1"
-_UMAP_SCHEMA = "methylation-latent.validation-latent-umap.v2"
+_UMAP_SCHEMA = "methylation-latent.validation-latent-umap.v3"
 _SPLITS = (
     ("diverse-blocks", "diverse_blocks"),
     ("held-out-chromosome", "held_out_chromosome"),
@@ -981,8 +981,12 @@ def _age_cluster_diagnostics(
     )
 
 
-def _umap_point(raw: dict[str, object], annotation: ProbeDisplayAnnotation) -> LatentUmapPoint:
-    _exact_keys(raw, {"probe_id", "chromosome", "position", "context", "x", "y"}, "UMAP point")
+def _sphere_point(raw: dict[str, object], annotation: ProbeDisplayAnnotation) -> LatentSpherePoint:
+    _exact_keys(
+        raw,
+        {"probe_id", "chromosome", "position", "context", "x", "y", "z"},
+        "spherical UMAP point",
+    )
     raw_identity = (
         parse_probe_id(_string(raw, "probe_id")),
         parse_autosome(_integer(raw, "chromosome")),
@@ -990,15 +994,16 @@ def _umap_point(raw: dict[str, object], annotation: ProbeDisplayAnnotation) -> L
         GenomicContext(_string(raw, "context")),
     )
     if raw_identity != annotation.locus_identity[:4]:
-        raise ValueError("UMAP point identity differs from the frozen probe table")
-    return LatentUmapPoint(
+        raise ValueError("spherical UMAP point identity differs from the frozen probe table")
+    return LatentSpherePoint(
         annotation=annotation,
         x=_number(raw, "x"),
         y=_number(raw, "y"),
+        z=_number(raw, "z"),
     )
 
 
-def _umap_panels(
+def _sphere_panels(
     umap_root: Path,
     experiments: Path,
     embeddings_root: Path,
@@ -1012,8 +1017,8 @@ def _umap_panels(
     dimensions: tuple[int, ...],
     probes: NonEmptyProbeSet,
     features: SequenceFeatureArtifact,
-) -> tuple[tuple[LatentUmapPanel, ...], tuple[str, ...]]:
-    panels: list[LatentUmapPanel] = []
+) -> tuple[tuple[LatentSpherePanel, ...], tuple[str, ...]]:
+    panels: list[LatentSpherePanel] = []
     artifact_ids: list[str] = []
     split_name = expected_prefix[3]
     probe_index_by_id = {probe.probe_id: index for index, probe in enumerate(probes.probes)}
@@ -1035,8 +1040,43 @@ def _umap_panels(
             tuning_record = _load_json(tuning_metadata)
             sampling = _object(record, "sampling")
             umap = _object(record, "umap")
+            distortion = _object(record, "distortion")
             umap_config = _object(umap, "config")
             age_point = _object(record, "age_point")
+            _exact_keys(
+                umap,
+                {
+                    "implementation",
+                    "input_geometry",
+                    "output_geometry",
+                    "graph",
+                    "initialization",
+                    "objective",
+                    "constraint",
+                    "config",
+                    "curve_a",
+                    "curve_b",
+                    "initial_cross_entropy",
+                    "final_cross_entropy",
+                    "graph_edge_count",
+                    "spectral_gap",
+                    "selected_step",
+                },
+                "spherical UMAP method",
+            )
+            _exact_keys(
+                distortion,
+                {
+                    "scope",
+                    "geodesic_stress_1",
+                    "geodesic_distance_pearson",
+                    "neighbor_count",
+                    "mean_neighbor_recall",
+                    "interpretation",
+                },
+                "spherical UMAP distortion",
+            )
+            _exact_keys(age_point, {"label", "x", "y", "z"}, "spherical UMAP age point")
             if (
                 record.get("schema") != _UMAP_SCHEMA
                 or record.get("status") != "post_hoc_visualization_validation_partition_only"
@@ -1060,13 +1100,24 @@ def _umap_panels(
                 or umap.get("implementation") != "exact_torch_fuzzy_cross_entropy"
                 or umap.get("input_geometry")
                 != "intrinsic_unit_hypersphere_geodesic_arccos_clamped_dot_product"
+                or umap.get("output_geometry")
+                != "unit_two_sphere_S2_in_R3_with_intrinsic_geodesic_distance"
                 or umap.get("graph") != "exact_knn_default_fuzzy_union"
-                or umap.get("initialization") != "deterministic_normalized_laplacian_spectral"
+                or umap.get("initialization")
+                != (
+                    "deterministic_three_eigenvector_normalized_laplacian_spectral_"
+                    "then_row_normalized"
+                )
                 or umap.get("objective")
                 != (
-                    "complete_bernoulli_fuzzy_set_cross_entropy_without_"
-                    "negative_sampling_approximation"
+                    "complete_bernoulli_fuzzy_set_cross_entropy_with_S2_geodesic_"
+                    "output_distances_without_negative_sampling_approximation"
                 )
+                or umap.get("constraint")
+                != "rowwise_unit_norm_projection_after_every_optimizer_step"
+                or _number(umap, "curve_a") <= 0.0
+                or _number(umap, "curve_b") <= 0.0
+                or not 0 < _integer(umap, "selected_step") <= 750
                 or {
                     "n_neighbors": _integer(umap_config, "n_neighbors"),
                     "local_connectivity": _number(umap_config, "local_connectivity"),
@@ -1090,16 +1141,22 @@ def _umap_panels(
                     "input_metric": "spherical_geodesic",
                 }
                 or age_point.get("label") != "learned age direction"
+                or distortion.get("scope") != "all_display_probes_plus_age_direction"
+                or distortion.get("interpretation")
+                != "S_d_minus_1_to_S2_is_lossy_metrics_quantify_projection_distortion"
+                or _integer(distortion, "neighbor_count") != 14
             ):
-                raise ValueError(f"latent UMAP identity differs: {path}")
+                raise ValueError(f"latent spherical UMAP identity differs: {path}")
             raw_points = _objects(record, "points")
             raw_probe_ids = tuple(
                 parse_probe_id(_string(point, "probe_id")) for point in raw_points
             )
             if len(set(raw_probe_ids)) != len(raw_probe_ids):
-                raise ValueError("UMAP record contains duplicate probe IDs")
+                raise ValueError("spherical UMAP record contains duplicate probe IDs")
             if any(probe_id not in probe_index_by_id for probe_id in raw_probe_ids):
-                raise ValueError("UMAP record contains a probe outside the frozen probe universe")
+                raise ValueError(
+                    "spherical UMAP record contains a probe outside the frozen probe universe"
+                )
             annotations = _probe_annotations(
                 tuple(probe_index_by_id[probe_id] for probe_id in raw_probe_ids),
                 window=window,
@@ -1107,7 +1164,7 @@ def _umap_panels(
                 features=features,
             )
             panels.append(
-                LatentUmapPanel(
+                LatentSpherePanel(
                     window_size=window,
                     latent_dimension=dimension,
                     lambda_age=0.1,
@@ -1121,14 +1178,20 @@ def _umap_panels(
                     spectral_gap=_number(umap, "spectral_gap"),
                     age_x=_number(age_point, "x"),
                     age_y=_number(age_point, "y"),
+                    age_z=_number(age_point, "z"),
+                    geodesic_stress=_number(distortion, "geodesic_stress_1"),
+                    geodesic_distance_pearson=_number(distortion, "geodesic_distance_pearson"),
+                    neighbor_recall=_number(distortion, "mean_neighbor_recall"),
+                    neighbor_count=_integer(distortion, "neighbor_count"),
+                    selected_step=_integer(umap, "selected_step"),
                     points=tuple(
-                        _umap_point(point, annotation)
+                        _sphere_point(point, annotation)
                         for point, annotation in zip(raw_points, annotations, strict=True)
                     ),
                 )
             )
             artifact_ids.append(
-                f"validation-latent-spherical-umap:{window}:{dimension}:{sha256_file(path)}"
+                f"validation-latent-S2-umap:{window}:{dimension}:{sha256_file(path)}"
             )
     return tuple(panels), tuple(artifact_ids)
 
@@ -1254,7 +1317,7 @@ def main() -> None:
         projection_dimensions = tuple(
             dimension for dimension in map(int, config.sweep.latent_dimensions) if dimension <= 128
         )
-        umap_panels, umap_artifacts = _umap_panels(
+        sphere_panels, umap_artifacts = _sphere_panels(
             arguments.latent_umap,
             arguments.experiments,
             arguments.embeddings,
@@ -1292,7 +1355,7 @@ def main() -> None:
                 "Interim report: primary-validated 1 kb and 4 kb selected-model results, "
                 "nested-validation hyperparameter sweeps, and separately labeled post-hoc "
                 "direct-age, distance-integration, metadata-colored scatter, cluster-audit, "
-                "and spherical-geodesic latent UMAP analyses."
+                "and interactive two-sphere latent UMAP analyses."
             ),
             disclaimer=(
                 "The planned 16 kb and 64 kb windows and the preregistered 16 kb projection are "
@@ -1322,7 +1385,7 @@ def main() -> None:
             scatter_panels=scatter_panels,
             age_cluster_diagnostics=cluster_diagnostics,
             age_cluster_agreements=cluster_agreements,
-            latent_umap_panels=umap_panels,
+            latent_sphere_panels=sphere_panels,
             exploratory_uniform_metrics=exploratory_uniform,
             exploratory_distance_metrics=exploratory_distance,
             kernel_weights=weights,

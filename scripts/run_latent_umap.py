@@ -1,4 +1,4 @@
-"""Project unit-sphere validation latents with deterministic geodesic Torch UMAP."""
+"""Project validation latents onto an interactive two-sphere with exact geodesic Torch UMAP."""
 
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ from methylation_latent.experiment_data import load_split_artifact
 from methylation_latent.model import LatentMetric, normalize_vector_strict
 from methylation_latent.storage import load_exact_safetensors
 from methylation_latent.tsne import deterministic_balanced_indices
-from methylation_latent.umap import UmapConfig, UmapInputMetric, exact_umap
+from methylation_latent.umap import UmapConfig, UmapInputMetric, exact_spherical_umap
 
-_SCHEMA = "methylation-latent.validation-latent-umap.v2"
+_SCHEMA = "methylation-latent.validation-latent-umap.v3"
 _TUNING_SCHEMA = "methylation-latent.latent-tuning-run.v2"
 _MODEL_KEYS = {"age_direction", "projection.weight"}
 _SPLITS = ("diverse-blocks", "held-out-chromosome")
@@ -289,7 +289,7 @@ def main() -> None:
                     rtol=0.0,
                 ):
                     raise RuntimeError("UMAP input rows, including age, are not unit norm")
-                projection = exact_umap(latent, config=_CONFIG)
+                projection = exact_spherical_umap(latent, config=_CONFIG)
                 probe_coordinates = projection.coordinates[:-1]
                 age_coordinate = projection.coordinates[-1]
                 points: list[dict[str, JsonValue]] = [
@@ -300,6 +300,7 @@ def main() -> None:
                         "context": probe.context.value,
                         "x": float(coordinate[0].item()),
                         "y": float(coordinate[1].item()),
+                        "z": float(coordinate[2].item()),
                     }
                     for probe, coordinate in zip(
                         display_probes,
@@ -345,12 +346,19 @@ def main() -> None:
                         "input_geometry": (
                             "intrinsic_unit_hypersphere_geodesic_arccos_clamped_dot_product"
                         ),
-                        "graph": "exact_knn_default_fuzzy_union",
-                        "initialization": "deterministic_normalized_laplacian_spectral",
-                        "objective": (
-                            "complete_bernoulli_fuzzy_set_cross_entropy_without_"
-                            "negative_sampling_approximation"
+                        "output_geometry": (
+                            "unit_two_sphere_S2_in_R3_with_intrinsic_geodesic_distance"
                         ),
+                        "graph": "exact_knn_default_fuzzy_union",
+                        "initialization": (
+                            "deterministic_three_eigenvector_normalized_laplacian_spectral_"
+                            "then_row_normalized"
+                        ),
+                        "objective": (
+                            "complete_bernoulli_fuzzy_set_cross_entropy_with_S2_geodesic_"
+                            "output_distances_without_negative_sampling_approximation"
+                        ),
+                        "constraint": "rowwise_unit_norm_projection_after_every_optimizer_step",
                         "config": cast(dict[str, JsonValue], asdict(_CONFIG)),
                         "curve_a": projection.curve_a,
                         "curve_b": projection.curve_b,
@@ -358,11 +366,23 @@ def main() -> None:
                         "final_cross_entropy": projection.final_cross_entropy,
                         "graph_edge_count": projection.graph_edge_count,
                         "spectral_gap": projection.spectral_gap,
+                        "selected_step": projection.selected_step,
+                    },
+                    "distortion": {
+                        "scope": "all_display_probes_plus_age_direction",
+                        "geodesic_stress_1": projection.geodesic_stress,
+                        "geodesic_distance_pearson": projection.geodesic_distance_pearson,
+                        "neighbor_count": projection.neighbor_count,
+                        "mean_neighbor_recall": projection.neighbor_recall,
+                        "interpretation": (
+                            "S_d_minus_1_to_S2_is_lossy_metrics_quantify_projection_distortion"
+                        ),
                     },
                     "age_point": {
                         "label": "learned age direction",
                         "x": float(age_coordinate[0].item()),
                         "y": float(age_coordinate[1].item()),
+                        "z": float(age_coordinate[2].item()),
                     },
                     "points": cast(list[JsonValue], points),
                 }

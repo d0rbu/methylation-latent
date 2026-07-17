@@ -16,7 +16,7 @@ GSE87571 IDATs; references to the unavailable GSE40279 primary run are historica
 - [`research/exploratory-latent-tsne.md`](research/exploratory-latent-tsne.md)
   — post-hoc validation-only latent-space visualization
 - [`research/exploratory-latent-umap.md`](research/exploratory-latent-umap.md)
-  — deterministic validation-only spherical-geodesic UMAP with the learned age direction
+  — deterministic validation-only interactive two-sphere UMAP with the learned age direction
 - [`research/age-scatter-cluster-audit.md`](research/age-scatter-cluster-audit.md)
   — target-aware post-hoc diagnosis of the two age-association lobes
 

@@ -14,6 +14,7 @@ from jaxtyping import Float64, jaxtyped
 Float64FeatureMatrix = Float64[t.Tensor, "points features"]
 Float64SquareMatrix = Float64[t.Tensor, "points points"]
 Float64Projection = Float64[t.Tensor, "points 2"]
+Float64SphereProjection = Float64[t.Tensor, "points 3"]
 Float64PointVector = Float64[t.Tensor, "points"]
 Float64NeighborMatrix = Float64[t.Tensor, "points neighbors"]
 
@@ -139,6 +140,68 @@ class UmapProjection:
         off_diagonal = ~t.eye(self.coordinates.shape[0], dtype=t.bool)
         if bool(t.any((distances == 0.0) & off_diagonal).item()):
             raise ValueError("UMAP projection contains duplicate coordinates")
+
+
+@dataclass(frozen=True, slots=True)
+class SphericalUmapProjection:
+    """A UMAP embedding constrained to the two-sphere in three Cartesian coordinates."""
+
+    coordinates: Float64SphereProjection
+    initial_cross_entropy: float
+    final_cross_entropy: float
+    curve_a: float
+    curve_b: float
+    graph_edge_count: int
+    spectral_gap: float
+    geodesic_stress: float
+    geodesic_distance_pearson: float
+    neighbor_recall: float
+    neighbor_count: int
+    selected_step: int
+
+    def __post_init__(self) -> None:
+        if (
+            self.coordinates.dtype != t.float64
+            or self.coordinates.ndim != 2
+            or self.coordinates.shape[0] < 4
+            or self.coordinates.shape[1] != 3
+        ):
+            raise TypeError(
+                "spherical UMAP coordinates must have shape [at least four,3] in float64"
+            )
+        numeric_positive = (
+            self.initial_cross_entropy,
+            self.final_cross_entropy,
+            self.curve_a,
+            self.curve_b,
+            self.spectral_gap,
+        )
+        if any(not math.isfinite(value) or value <= 0.0 for value in numeric_positive):
+            raise ValueError(
+                "spherical UMAP objective, curve, and spectral values must be positive"
+            )
+        if self.final_cross_entropy >= self.initial_cross_entropy:
+            raise ValueError("spherical UMAP optimization must strictly reduce fuzzy cross entropy")
+        if (
+            self.graph_edge_count <= 0
+            or self.neighbor_count <= 0
+            or self.neighbor_count >= self.coordinates.shape[0]
+            or self.selected_step <= 0
+        ):
+            raise ValueError("spherical UMAP graph, neighbor, and step counts are inconsistent")
+        if not math.isfinite(self.geodesic_stress) or self.geodesic_stress < 0.0:
+            raise ValueError("spherical UMAP geodesic stress must be finite and non-negative")
+        if not -1.0 <= self.geodesic_distance_pearson <= 1.0:
+            raise ValueError("spherical UMAP geodesic-distance Pearson must lie in [-1,1]")
+        if not 0.0 <= self.neighbor_recall <= 1.0:
+            raise ValueError("spherical UMAP neighbor recall must lie in [0,1]")
+        if not bool(t.isfinite(self.coordinates).all().item()):
+            raise ValueError("spherical UMAP coordinates must be finite")
+        norms = t.linalg.vector_norm(self.coordinates, dim=1)
+        if not t.allclose(norms, t.ones_like(norms), atol=2.0e-15, rtol=0.0):
+            raise ValueError("spherical UMAP coordinates must have unit-norm rows")
+        if t.unique(self.coordinates, dim=0).shape[0] != self.coordinates.shape[0]:
+            raise ValueError("spherical UMAP projection contains duplicate coordinates")
 
 
 @jaxtyped(typechecker=beartype)
@@ -338,6 +401,42 @@ def _spectral_initialization(
 
 
 @jaxtyped(typechecker=beartype)
+def _spherical_spectral_initialization(
+    graph: Float64SquareMatrix,
+    *,
+    seed: int,
+) -> tuple[Float64SphereProjection, float]:
+    degrees = graph.sum(dim=1)
+    if bool(t.any(degrees <= 0.0).item()):
+        raise ValueError("spherical UMAP spectral initialization requires positive graph degrees")
+    inverse_sqrt = t.rsqrt(degrees)
+    laplacian = t.eye(graph.shape[0], dtype=t.float64) - (
+        inverse_sqrt[:, None] * graph * inverse_sqrt[None, :]
+    )
+    eigenvalues, eigenvectors = t.linalg.eigh(laplacian)
+    zero_count = int((eigenvalues < 1.0e-10).sum().item())
+    if zero_count != 1:
+        raise ValueError(
+            "spherical UMAP fuzzy graph must be connected; "
+            f"normalized Laplacian has {zero_count} zeros"
+        )
+    coordinates = eigenvectors[:, 1:4].clone()
+    if coordinates.shape[1] != 3:
+        raise ValueError("spherical UMAP requires at least four graph vertices")
+    for axis in range(3):
+        pivot = int(t.argmax(t.abs(coordinates[:, axis])).item())
+        if float(coordinates[pivot, axis].item()) < 0.0:
+            coordinates[:, axis] *= -1.0
+    generator = t.Generator(device="cpu").manual_seed(seed)
+    coordinates += 1.0e-6 * t.randn(coordinates.shape, dtype=t.float64, generator=generator)
+    norms = t.linalg.vector_norm(coordinates, dim=1)
+    if bool(t.any(norms == 0.0).item()):
+        raise RuntimeError("spherical UMAP spectral initialization contains a zero vector")
+    coordinates /= norms[:, None]
+    return coordinates, float(eigenvalues[1].item())
+
+
+@jaxtyped(typechecker=beartype)
 def _fuzzy_cross_entropy(
     coordinates: Float64Projection,
     memberships: Float64SquareMatrix,
@@ -352,6 +451,69 @@ def _fuzzy_cross_entropy(
     log_denominator = t.log1p(odds)
     high = memberships[row, column]
     return t.mean(high * log_denominator + (1.0 - high) * (log_denominator - t.log(odds)))
+
+
+@jaxtyped(typechecker=beartype)
+def _spherical_fuzzy_cross_entropy(
+    coordinates: Float64SphereProjection,
+    memberships: Float64SquareMatrix,
+    *,
+    curve_a: float,
+    curve_b: float,
+) -> t.Tensor:
+    row, column = t.triu_indices(coordinates.shape[0], coordinates.shape[0], offset=1)
+    cosine = t.sum(coordinates[row] * coordinates[column], dim=1)
+    angular_distance = t.acos(t.clamp(cosine, min=-1.0 + 1.0e-12, max=1.0 - 1.0e-12))
+    distance_power = t.pow(t.square(angular_distance), curve_b)
+    odds = curve_a * t.clamp(distance_power, min=t.finfo(t.float64).tiny)
+    log_denominator = t.log1p(odds)
+    high = memberships[row, column]
+    return t.mean(high * log_denominator + (1.0 - high) * (log_denominator - t.log(odds)))
+
+
+@jaxtyped(typechecker=beartype)
+def _spherical_projection_diagnostics(
+    input_distances: Float64SquareMatrix,
+    output_coordinates: Float64SphereProjection,
+    *,
+    neighbor_count: int,
+) -> tuple[float, float, float]:
+    count = input_distances.shape[0]
+    if output_coordinates.shape[0] != count or not 0 < neighbor_count < count:
+        raise ValueError("spherical UMAP diagnostics require aligned points and neighbor count")
+    output_distances = _pairwise_input_distances(
+        output_coordinates,
+        metric=UmapInputMetric.SPHERICAL_GEODESIC,
+    )
+    row, column = t.triu_indices(count, count, offset=1)
+    target = input_distances[row, column]
+    observed = output_distances[row, column]
+    denominator = t.sum(t.square(target))
+    if float(denominator.item()) == 0.0:
+        raise ValueError("spherical UMAP input distances have zero stress denominator")
+    stress = float(t.sqrt(t.sum(t.square(observed - target)) / denominator).item())
+    target_centered = target - target.mean()
+    observed_centered = observed - observed.mean()
+    pearson_denominator = t.linalg.vector_norm(target_centered) * t.linalg.vector_norm(
+        observed_centered
+    )
+    if float(pearson_denominator.item()) == 0.0:
+        raise ValueError("spherical UMAP distance Pearson is undefined for a constant vector")
+    pearson = float(t.dot(target_centered, observed_centered).item() / pearson_denominator.item())
+    diagonal_mask = t.eye(count, dtype=t.bool)
+    input_neighbors = t.argsort(
+        input_distances.masked_fill(diagonal_mask, float("inf")),
+        dim=1,
+        stable=True,
+    )[:, :neighbor_count]
+    output_neighbors = t.argsort(
+        output_distances.masked_fill(diagonal_mask, float("inf")),
+        dim=1,
+        stable=True,
+    )[:, :neighbor_count]
+    overlap = (input_neighbors[:, :, None] == output_neighbors[:, None, :]).any(dim=2).sum()
+    recall = float(overlap.item() / (count * neighbor_count))
+    return stress, pearson, recall
 
 
 @jaxtyped(typechecker=beartype)
@@ -407,4 +569,95 @@ def exact_umap(values: t.Tensor, *, config: UmapConfig) -> UmapProjection:
         curve_b=curve_b,
         graph_edge_count=edge_count,
         spectral_gap=spectral_gap,
+    )
+
+
+@jaxtyped(typechecker=beartype)
+def exact_spherical_umap(values: t.Tensor, *, config: UmapConfig) -> SphericalUmapProjection:
+    """Optimize exact UMAP cross entropy with output points constrained to the unit two-sphere."""
+
+    if config.input_metric is not UmapInputMetric.SPHERICAL_GEODESIC:
+        raise ValueError("spherical-output UMAP requires spherical-geodesic input distances")
+    prepared = _validate_input(values, config)
+    input_distances = _pairwise_input_distances(
+        prepared,
+        metric=UmapInputMetric.SPHERICAL_GEODESIC,
+    )
+    graph = fuzzy_simplicial_graph(prepared, config=config)
+    curve_a, curve_b = fit_default_curve_parameters(config.spread, config.min_dist)
+    initial, spectral_gap = _spherical_spectral_initialization(
+        graph.memberships,
+        seed=config.seed,
+    )
+    initial_cross_entropy = float(
+        _spherical_fuzzy_cross_entropy(
+            initial,
+            graph.memberships,
+            curve_a=curve_a,
+            curve_b=curve_b,
+        ).item()
+    )
+    coordinates = t.nn.Parameter(initial)
+    optimizer = t.optim.Adam((coordinates,), lr=config.learning_rate)
+    best_cross_entropy = initial_cross_entropy
+    best_coordinates = initial.clone()
+    selected_step = 0
+    for step in range(config.optimization_steps):
+        loss = _spherical_fuzzy_cross_entropy(
+            coordinates,
+            graph.memberships,
+            curve_a=curve_a,
+            curve_b=curve_b,
+        )
+        if not bool(t.isfinite(loss).item()):
+            raise RuntimeError(f"spherical UMAP loss became non-finite at optimization step {step}")
+        loss_value = float(loss.item())
+        if loss_value < best_cross_entropy:
+            best_cross_entropy = loss_value
+            best_coordinates = coordinates.detach().clone()
+            selected_step = step
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+        with t.no_grad():
+            coordinates /= t.linalg.vector_norm(coordinates, dim=1, keepdim=True)
+            if not bool(t.isfinite(coordinates).all().item()):
+                raise RuntimeError(f"spherical UMAP coordinates became non-finite at step {step}")
+    with t.inference_mode():
+        terminal_cross_entropy = float(
+            _spherical_fuzzy_cross_entropy(
+                coordinates,
+                graph.memberships,
+                curve_a=curve_a,
+                curve_b=curve_b,
+            ).item()
+        )
+        if terminal_cross_entropy < best_cross_entropy:
+            best_cross_entropy = terminal_cross_entropy
+            best_coordinates = coordinates.detach().clone()
+            selected_step = config.optimization_steps
+        if selected_step == 0:
+            raise RuntimeError("spherical UMAP optimization did not improve its initialization")
+        final = best_coordinates
+        final_cross_entropy = best_cross_entropy
+        neighbor_count = config.n_neighbors - 1
+        stress, pearson, recall = _spherical_projection_diagnostics(
+            input_distances,
+            final,
+            neighbor_count=neighbor_count,
+        )
+    edge_count = int(t.count_nonzero(t.triu(graph.memberships, diagonal=1)).item())
+    return SphericalUmapProjection(
+        coordinates=final,
+        initial_cross_entropy=initial_cross_entropy,
+        final_cross_entropy=final_cross_entropy,
+        curve_a=curve_a,
+        curve_b=curve_b,
+        graph_edge_count=edge_count,
+        spectral_gap=spectral_gap,
+        geodesic_stress=stress,
+        geodesic_distance_pearson=pearson,
+        neighbor_recall=recall,
+        neighbor_count=neighbor_count,
+        selected_step=selected_step,
     )

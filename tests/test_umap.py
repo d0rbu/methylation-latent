@@ -6,9 +6,11 @@ import pytest
 import torch as t
 
 from methylation_latent.umap import (
+    SphericalUmapProjection,
     UmapConfig,
     UmapGraph,
     UmapInputMetric,
+    exact_spherical_umap,
     exact_umap,
     fit_default_curve_parameters,
     fuzzy_simplicial_graph,
@@ -93,6 +95,86 @@ def test_spherical_umap_is_deterministic_on_unit_vectors() -> None:
     second = exact_umap(values, config=config)
     assert t.equal(first.coordinates, second.coordinates)
     assert first.final_cross_entropy == second.final_cross_entropy
+
+
+def test_spherical_output_umap_is_deterministic_unit_norm_and_reports_distortion() -> None:
+    values = t.nn.functional.normalize(_values(), dim=1)
+    config = replace(
+        _config(),
+        input_metric=UmapInputMetric.SPHERICAL_GEODESIC,
+    )
+    first = exact_spherical_umap(values, config=config)
+    second = exact_spherical_umap(values, config=config)
+    assert t.equal(first.coordinates, second.coordinates)
+    assert first.final_cross_entropy == second.final_cross_entropy
+    assert first.final_cross_entropy < first.initial_cross_entropy
+    assert t.allclose(
+        t.linalg.vector_norm(first.coordinates, dim=1),
+        t.ones(values.shape[0], dtype=t.float64),
+        atol=2.0e-15,
+        rtol=0.0,
+    )
+    assert first.geodesic_stress >= 0.0
+    assert -1.0 <= first.geodesic_distance_pearson <= 1.0
+    assert 0.0 <= first.neighbor_recall <= 1.0
+    assert first.neighbor_count == config.n_neighbors - 1
+    assert 0 < first.selected_step <= config.optimization_steps
+
+
+def test_spherical_output_umap_rejects_non_spherical_input_metric() -> None:
+    with pytest.raises(ValueError, match="requires spherical-geodesic"):
+        exact_spherical_umap(_values(), config=_config())
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    (
+        ({"coordinates": t.ones((3, 3), dtype=t.float64)}, "shape"),
+        ({"coordinates": t.ones((12, 2), dtype=t.float64)}, "shape"),
+        ({"coordinates": t.zeros((12, 3), dtype=t.float64)}, "unit-norm"),
+        ({"initial_cross_entropy": -1.0}, "positive"),
+        ({"final_cross_entropy": 100.0}, "strictly reduce"),
+        ({"graph_edge_count": 0}, "counts"),
+        ({"geodesic_stress": -0.1}, "stress"),
+        ({"geodesic_distance_pearson": 1.1}, "Pearson"),
+        ({"neighbor_recall": 1.1}, "recall"),
+        ({"neighbor_count": 0}, "counts"),
+        ({"selected_step": 0}, "counts"),
+    ),
+)
+def test_spherical_umap_projection_rejects_invalid_state(
+    change: dict[str, object], message: str
+) -> None:
+    valid = exact_spherical_umap(
+        t.nn.functional.normalize(_values(), dim=1),
+        config=replace(_config(), input_metric=UmapInputMetric.SPHERICAL_GEODESIC),
+    )
+    with pytest.raises((TypeError, ValueError), match=message):
+        replace(valid, **change)
+
+
+def test_spherical_umap_projection_rejects_duplicate_unit_coordinates() -> None:
+    valid = exact_spherical_umap(
+        t.nn.functional.normalize(_values(), dim=1),
+        config=replace(_config(), input_metric=UmapInputMetric.SPHERICAL_GEODESIC),
+    )
+    duplicated = valid.coordinates.clone()
+    duplicated[1] = duplicated[0]
+    with pytest.raises(ValueError, match="duplicate"):
+        SphericalUmapProjection(
+            coordinates=duplicated,
+            initial_cross_entropy=valid.initial_cross_entropy,
+            final_cross_entropy=valid.final_cross_entropy,
+            curve_a=valid.curve_a,
+            curve_b=valid.curve_b,
+            graph_edge_count=valid.graph_edge_count,
+            spectral_gap=valid.spectral_gap,
+            geodesic_stress=valid.geodesic_stress,
+            geodesic_distance_pearson=valid.geodesic_distance_pearson,
+            neighbor_recall=valid.neighbor_recall,
+            neighbor_count=valid.neighbor_count,
+            selected_step=valid.selected_step,
+        )
 
 
 @pytest.mark.parametrize(
