@@ -10,6 +10,7 @@
 | `scripts/run_experiments.py` | Ordered sequence/pair/age/full/evaluate stages |
 | `scripts/run_distance_integration.py` | Post-hoc validation-fitted PSD distance integration |
 | `scripts/run_direct_tanh_age.py` | Post-hoc direct scalar tanh age-only baseline |
+| `scripts/run_prediction_scatter.py` | Display-only predicted-versus-empirical correlation samples |
 | `scripts/compile_interim_results_site.py` | Compile completed windows, validation sweeps, and explicitly post-hoc panels into a non-primary site |
 | `scripts/compile_results_site.py` | Compile validated evaluation records into static sites |
 | `results/` | Compact validated site-data artifacts after experiment completion |

@@ -84,5 +84,9 @@ compiler's all-window or 16-kb-projection requirements.
 artifact tree. It has no latent-dimension or lambda axes and cannot replace the original frozen
 age-only record in place.
 
+`run_prediction_scatter.py` samples indices without target access from frozen evaluation pairs and
+held-out probe order, then stores aligned empirical and predicted correlations for display. It
+reproduces the registered age metrics within an eight-ULP bound and never fits a model.
+
 Large artifacts live outside Git. Git contains protocol, code, tests, templates, and compact
 validated result summaries only.
