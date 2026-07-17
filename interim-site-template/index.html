@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Methylation Latent · Interim results</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">Sequence → co-methylation geometry</p>
+      <h1>Methylation Latent</h1>
+      <p id="status" class="status">Loading the interim artifact registry…</p>
+      <div class="metadata">
+        <span id="protocol"></span>
+        <span class="badge">INTERIM · MIXED EVIDENCE</span>
+      </div>
+      <p id="provenance" class="status mono"></p>
+      <nav aria-label="Split family">
+        <a href="../diverse-blocks/">Diverse held-out blocks</a>
+        <a href="../held-out-chromosome/">Held-out chromosome 7</a>
+      </nav>
+    </header>
+    <main>
+      <section class="warning">
+        <h2>Read this first</h2>
+        <p id="disclaimer"></p>
+        <div id="progress" class="progress"></div>
+      </section>
+      <section>
+        <p class="section-label">Nested validation only · no test shopping</p>
+        <h2>Latent dimensionality × age-loss sweep</h2>
+        <p>All 15 full-model candidates per completed window. The selection score is
+          pair MSE + age MSE; λ affects training, not the selection formula. Stars mark the
+          one configuration selected before frozen-test evaluation.</p>
+        <div id="tuning-sweep" class="panel"></div>
+      </section>
+      <section>
+        <p class="section-label primary">Primary-validated selected models</p>
+        <h2>Window sweep: pair correlation</h2>
+        <p>Only validation-selected models appear here. Seen × held-out and held-out × held-out
+          populations remain separate.</p>
+        <div id="window-sweep" class="panel"></div>
+      </section>
+      <section>
+        <p class="section-label primary">Primary-validated selected models</p>
+        <h2>Age association against preregistered baselines</h2>
+        <p>The reported output is one scalar ρ prediction. The registered Caduceus age-only model
+          produces it as a cosine to a learned age direction; it is not a one-unit sigmoid head.</p>
+        <div id="age-metrics" class="panel"></div>
+      </section>
+      <section>
+        <p class="section-label primary">Primary-validated selected models</p>
+        <h2>Distance-stratified pair behavior</h2>
+        <p>Means and within-bin metrics are never pooled across distance. The dashed curve is the
+          training-only <em>f</em>(|Δpos|) reference; trans is a separate class.</p>
+        <div id="distance-metrics" class="panel"></div>
+      </section>
+      <section class="exploratory">
+        <p class="section-label exploratory-label">Post-hoc exploratory · not confirmatory</p>
+        <h2>PSD distance integration</h2>
+        <p>A convex direct-sum Gram kernel combines same-chromosome Laplacian distance features
+          with sequence cosine. Weights use nested validation targets only, but this hypothesis was
+          designed after viewing these test results and therefore needs a new holdout.</p>
+        <div id="distance-integration" class="panel"></div>
+      </section>
+      <section class="exploratory">
+        <p class="section-label exploratory-label">Post-hoc exploratory · distance bins</p>
+        <h2>Sequence versus distance-integrated predictions</h2>
+        <div id="integrated-distance" class="panel"></div>
+      </section>
+      <section>
+        <p class="section-label">Pending preregistered output</p>
+        <h2>Held-out latent projection</h2>
+        <p class="empty">Not shown. The frozen protocol specifies the 16 kb model for this panel,
+          and that embedding cache is incomplete. No substitute projection is generated.</p>
+      </section>
+      <section>
+        <h2>Artifact provenance</h2>
+        <ul id="artifacts"></ul>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

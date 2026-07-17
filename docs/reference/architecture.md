@@ -75,5 +75,10 @@ The four primary scripts are deliberately thin:
 `run_distance_integration.py` is a separately labeled post-hoc analysis. It consumes immutable
 primary artifacts and writes only the exploratory distance-integration schema.
 
+`compile_interim_results_site.py` accepts only a strict subset of the frozen window sweep. It emits
+the separate interim-site schema, exposes every completed full-model candidate only through nested
+validation metrics, and labels distance integration as post-hoc. It does not relax the primary
+compiler's all-window or 16-kb-projection requirements.
+
 Large artifacts live outside Git. Git contains protocol, code, tests, templates, and compact
 validated result summaries only.

@@ -9,9 +9,12 @@
 | `scripts/seal_primary_data.py` | Recompute invariants and seal the 17-file data bundle |
 | `scripts/run_experiments.py` | Ordered sequence/pair/age/full/evaluate stages |
 | `scripts/run_distance_integration.py` | Post-hoc validation-fitted PSD distance integration |
+| `scripts/compile_interim_results_site.py` | Compile completed windows, validation sweeps, and explicitly post-hoc panels into a non-primary site |
 | `scripts/compile_results_site.py` | Compile validated evaluation records into static sites |
 | `results/` | Compact validated site-data artifacts after experiment completion |
 | `site-template/` | Split-specific result-page HTML, JavaScript, and CSS |
+| `interim-site-template/` | Mixed-evidence interim page with validation sweeps and post-hoc labeling |
+| `interim-site-root-template/` | Interim split-family landing page |
 | `site-root-template/` | Root landing page for the two split sites |
 
 ## Source package

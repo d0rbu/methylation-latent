@@ -16,6 +16,35 @@ Each split-specific page contains:
 The diverse-block and held-out-chromosome pages are separate. The compiler rejects absent windows,
 partial age stages, missing pair populations, identity drift, or an incomplete projection.
 
+## Interim site while the frozen sweep is incomplete
+
+Do not weaken the primary compiler to publish partial runs. The separate interim compiler requires
+an increasing strict subset of the four planned windows and writes
+`methylation-latent.interim-site-data.v1`. It displays:
+
+- every full-model `d × lambda` candidate using nested-validation metrics only;
+- frozen-test metrics only for the already validation-selected models;
+- the preregistered age and distance-stratified panels for completed windows;
+- post-hoc PSD distance integration under an explicit non-confirmatory label;
+- an explicit pending state, rather than a substitute, for the 16-kb latent projection.
+
+```bash
+uv run python scripts/compile_interim_results_site.py \
+  --config configs/protocol-v2.toml \
+  --data "$RUN_ROOT/data" \
+  --experiments "$RUN_ROOT/experiments" \
+  --distance-integration "$RUN_ROOT/exploratory/distance-integration-v2" \
+  --results-output "$RUN_ROOT/interim-site-data-v1" \
+  --site-template interim-site-template \
+  --root-template interim-site-root-template \
+  --site-output "$RUN_ROOT/interim-site-v1" \
+  --windows 1024 4096
+```
+
+Both output directories must be absent. The compiler verifies the sealed data and split identity,
+all candidate hashes, the selected configuration, exact reproduction of primary sequence metrics,
+and the deterministic exploratory runtime contract before writing any split page.
+
 ## Compile
 
 ```bash

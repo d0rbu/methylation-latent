@@ -37,6 +37,7 @@ A finalized cache cannot accept another shard.
 | `final-refit.v2` | producer commit and selected-step refit on complete primary training |
 | `held-out-evaluation.v2` | producer commit, separate age/pair metrics, optional 16-kb projection |
 | `site-data.v1` | complete split-specific panels and all contributing artifact IDs |
+| `interim-site-data.v1` | completed-window primary panels plus nested-validation sweeps and separately labeled post-hoc analyses; cannot substitute for `site-data.v1` |
 | `exploratory-distance-integration.v2` | post-hoc validation-fitted PSD distance/sequence mixture with a deterministic single-thread CPU runtime; never primary-validated |
 
 ## Identity rules
