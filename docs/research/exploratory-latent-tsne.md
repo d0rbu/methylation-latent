@@ -39,8 +39,8 @@ than selecting the most visually appealing panel.
 
 ```console
 uv run python scripts/run_latent_tsne.py \
-  --config configs/gse87571-hg19-caduceus-ps-v2.yaml \
-  --data "$ARTIFACT_ROOT/primary-data" \
+  --config configs/protocol-v2.toml \
+  --data "$ARTIFACT_ROOT/data" \
   --embeddings "$ARTIFACT_ROOT/embeddings" \
   --experiments "$ARTIFACT_ROOT/experiments" \
   --output "$ARTIFACT_ROOT/exploratory/validation-latent-tsne-v1" \
