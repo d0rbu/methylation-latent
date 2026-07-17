@@ -20,18 +20,20 @@ partial age stages, missing pair populations, identity drift, or an incomplete p
 
 Do not weaken the primary compiler to publish partial runs. The separate interim compiler requires
 an increasing strict subset of the four planned windows and writes
-`methylation-latent.interim-site-data.v3`. It displays:
+`methylation-latent.interim-site-data.v4`. It displays:
 
 - every full-model `d × lambda` candidate using nested-validation metrics only;
 - frozen-test metrics only for the already validation-selected models;
 - the preregistered age and distance-stratified panels for completed windows;
 - post-hoc PSD distance integration under an explicit non-confirmatory label;
 - the post-hoc corrected direct scalar tanh age baseline;
-- target-blind display samples of predicted versus empirical age and pair correlations;
+- target-blind display samples of predicted versus empirical age and pair correlations, with the
+  age probes switchable among six probe-level annotation colorings;
 - a target-aware, post-hoc k-means audit of the two age-scatter lobes, including context,
   chromosome, probe-design, strand, sequence-feature, and sex-stratified diagnostics;
-- deterministic exact-Torch UMAP of the same context-balanced nested-validation loci plus the
-  learned age direction for `d = 16, 32, 64, 128` at `lambda = 0.1`;
+- deterministic exact-Torch spherical-geodesic UMAP of the same context-balanced
+  nested-validation loci plus the learned age direction for `d = 16, 32, 64, 128` at
+  `lambda = 0.1`, with the same six color modes;
 - an explicit pending state, rather than a substitute, for the 16-kb latent projection.
 
 ```bash
@@ -48,20 +50,21 @@ uv run python scripts/compile_interim_results_site.py \
   --direct-age "$RUN_ROOT/exploratory/direct-tanh-age-v1" \
   --prediction-scatter "$RUN_ROOT/exploratory/prediction-scatter-v1" \
   --age-cluster-audit "$RUN_ROOT/exploratory/age-scatter-cluster-audit-v1" \
-  --latent-umap "$RUN_ROOT/exploratory/validation-latent-umap-v1" \
-  --results-output "$RUN_ROOT/interim-site-data-v3" \
+  --latent-umap "$RUN_ROOT/exploratory/validation-latent-spherical-umap-v2" \
+  --results-output "$RUN_ROOT/interim-site-data-v4" \
   --site-template interim-site-template \
   --root-template interim-site-root-template \
-  --site-output "$RUN_ROOT/interim-site-v3" \
+  --site-output "$RUN_ROOT/interim-site-v4" \
   --windows 1024 4096
 ```
 
 Both output directories must be absent. The compiler verifies the sealed data and split identity,
 all candidate hashes, the selected configuration, primary sequence-metric reproduction within an
 explicit eight-ULP bound, direct-age/scatter/cluster source hashes, the complete UMAP grid and its
-validation-only target-free sampling contract, the age-vector point, and the deterministic
-exploratory runtime contract before writing any split page. The ULP allowance covers independently
-ordered float64 reductions; counts remain exact.
+validation-only target-free sampling contract, unit-sphere metric, the age-vector point, exact
+manifest/sequence-feature joins for every displayed probe, and the deterministic exploratory
+runtime contract before writing any split page. The ULP allowance covers independently ordered
+float64 reductions; counts remain exact.
 
 ## Compile
 

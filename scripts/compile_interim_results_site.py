@@ -21,12 +21,17 @@ from methylation_latent.config import ProtocolConfig, load_protocol_config
 from methylation_latent.data_bundle import verify_primary_data_bundle
 from methylation_latent.domain import (
     GenomicContext,
+    NonEmptyProbeSet,
     parse_autosome,
     parse_one_based_position,
     parse_probe_id,
 )
 from methylation_latent.evaluation import PairPopulation
-from methylation_latent.experiment_data import load_split_artifact
+from methylation_latent.experiment_data import (
+    SequenceFeatureArtifact,
+    load_sequence_features,
+    load_split_artifact,
+)
 from methylation_latent.interim_site import (
     INTERIM_SITE_SCHEMA,
     AgeClusterAgreement,
@@ -39,7 +44,7 @@ from methylation_latent.interim_site import (
     KernelWeightPoint,
     LatentUmapPanel,
     LatentUmapPoint,
-    ScatterClusterSeries,
+    ProbeDisplayAnnotation,
     ScatterPredictionSeries,
     TuningSweepPoint,
     build_interim_static_site,
@@ -53,7 +58,7 @@ _DISTANCE_SCHEMA = "methylation-latent.exploratory-distance-integration.v2"
 _DIRECT_AGE_SCHEMA = "methylation-latent.exploratory-direct-tanh-age.v1"
 _SCATTER_SCHEMA = "methylation-latent.prediction-scatter.v1"
 _CLUSTER_SCHEMA = "methylation-latent.age-scatter-cluster-audit.v1"
-_UMAP_SCHEMA = "methylation-latent.validation-latent-umap.v1"
+_UMAP_SCHEMA = "methylation-latent.validation-latent-umap.v2"
 _SPLITS = (
     ("diverse-blocks", "diverse_blocks"),
     ("held-out-chromosome", "held_out_chromosome"),
@@ -580,7 +585,7 @@ def _scatter_panel(
     *,
     window: int,
     population: str,
-    cluster_labels: dict[str, tuple[int, ...]] | None,
+    annotations: tuple[ProbeDisplayAnnotation, ...],
 ) -> CorrelationScatterPanel:
     _exact_keys(
         raw,
@@ -610,18 +615,38 @@ def _scatter_panel(
         sample_indices=_integers(raw, "sample_indices"),
         target=_numbers(raw, "target"),
         predictions=series,
-        clusters=(
-            ()
-            if cluster_labels is None
-            else tuple(
-                ScatterClusterSeries(model=model, labels=cluster_labels[model])
-                for model in sorted(cluster_labels)
-            )
-        ),
+        annotations=annotations,
     )
     if _integer(raw, "display_count") != len(panel.target):
         raise ValueError("scatter display count differs from its aligned vectors")
     return panel
+
+
+def _probe_annotations(
+    indices: tuple[int, ...],
+    *,
+    window: int,
+    probes: NonEmptyProbeSet,
+    features: SequenceFeatureArtifact,
+) -> tuple[ProbeDisplayAnnotation, ...]:
+    if window not in features.by_window:
+        raise ValueError(f"sequence features do not contain window {window}")
+    if any(index < 0 or index >= len(probes) for index in indices):
+        raise ValueError("probe annotation indices are outside the frozen probe universe")
+    values = features.by_window[window]
+    return tuple(
+        ProbeDisplayAnnotation(
+            probe_id=probes.probes[index].probe_id,
+            chromosome=probes.probes[index].chromosome,
+            position=probes.probes[index].position,
+            context=probes.probes[index].context,
+            design=probes.probes[index].design,
+            manifest_strand=probes.probes[index].manifest_strand,
+            cpg_density=float(values[index, 0].item()),
+            gc_content=float(values[index, 1].item()),
+        )
+        for index in indices
+    )
 
 
 def _scatter_panels(
@@ -635,7 +660,9 @@ def _scatter_panels(
     windows: tuple[int, ...],
     evaluations: tuple[tuple[Path, dict[str, object]], ...],
     direct_records: dict[int, tuple[Path, dict[str, object]]],
-    cluster_labels: dict[int, dict[str, tuple[int, ...]]],
+    test_indices: tuple[int, ...],
+    probes: NonEmptyProbeSet,
+    features: SequenceFeatureArtifact,
 ) -> tuple[tuple[CorrelationScatterPanel, ...], tuple[str, ...]]:
     panels: list[CorrelationScatterPanel] = []
     artifact_ids: list[str] = []
@@ -683,17 +710,20 @@ def _scatter_panels(
             raise ValueError(f"prediction scatter identity differs: {path}")
         age_raw = _object(record, "age")
         display_indices = _integers(age_raw, "sample_indices")
-        full_labels = cluster_labels[window]
-        display_labels = {
-            model: tuple(labels[index] for index in display_indices)
-            for model, labels in full_labels.items()
-        }
+        if _integer(age_raw, "source_count") != len(test_indices):
+            raise ValueError("age-scatter source count differs from frozen test probe count")
+        annotations = _probe_annotations(
+            tuple(test_indices[index] for index in display_indices),
+            window=window,
+            probes=probes,
+            features=features,
+        )
         panels.append(
             _scatter_panel(
                 age_raw,
                 window=window,
                 population="age",
-                cluster_labels=display_labels,
+                annotations=annotations,
             )
         )
         pairs = _object(record, "pairs")
@@ -707,7 +737,7 @@ def _scatter_panels(
                 _object(pairs, population.value),
                 window=window,
                 population=population.value,
-                cluster_labels=None,
+                annotations=(),
             )
             for population in _POPULATIONS
         )
@@ -734,7 +764,7 @@ def _cluster_diagnostic(
     window: int,
     model: str,
     source_count: int,
-) -> tuple[AgeClusterDiagnostic, tuple[int, ...]]:
+) -> AgeClusterDiagnostic:
     kmeans = _object(raw, "kmeans")
     labels = _integers(kmeans, "labels_in_frozen_test_order")
     if len(labels) != source_count or set(labels) != {0, 1}:
@@ -803,7 +833,7 @@ def _cluster_diagnostic(
     )
     if labels.count(0) != diagnostic.negative_count or labels.count(1) != diagnostic.positive_count:
         raise ValueError("age-cluster label counts differ from the audit summary")
-    return diagnostic, labels
+    return diagnostic
 
 
 def _age_cluster_diagnostics(
@@ -823,7 +853,6 @@ def _age_cluster_diagnostics(
 ) -> tuple[
     tuple[AgeClusterDiagnostic, ...],
     tuple[AgeClusterAgreement, ...],
-    dict[int, dict[str, tuple[int, ...]]],
     int,
     int,
     str,
@@ -831,7 +860,6 @@ def _age_cluster_diagnostics(
 ]:
     diagnostics: list[AgeClusterDiagnostic] = []
     agreements: list[AgeClusterAgreement] = []
-    labels_by_window: dict[int, dict[str, tuple[int, ...]]] = {}
     artifact_ids: list[str] = []
     phenotype_identity: tuple[int, int, str] | None = None
     split_name = expected_prefix[3]
@@ -917,16 +945,15 @@ def _age_cluster_diagnostics(
         raw_analyses = _object(record, "analyses")
         if set(raw_analyses) != set(model_names):
             raise ValueError("age-cluster analysis models differ")
-        labels_by_window[window] = {}
         for model_name in model_names:
-            diagnostic, labels = _cluster_diagnostic(
-                _object(raw_analyses, model_name),
-                window=window,
-                model=model_name,
-                source_count=test_count,
+            diagnostics.append(
+                _cluster_diagnostic(
+                    _object(raw_analyses, model_name),
+                    window=window,
+                    model=model_name,
+                    source_count=test_count,
+                )
             )
-            diagnostics.append(diagnostic)
-            labels_by_window[window][model_name] = labels
         raw_agreement = _object(
             _object(record, "cross_model_cluster_agreement"),
             "cosine_age_only__full_latent_metric",
@@ -947,7 +974,6 @@ def _age_cluster_diagnostics(
     return (
         tuple(diagnostics),
         tuple(agreements),
-        labels_by_window,
         phenotype_identity[0],
         phenotype_identity[1],
         phenotype_identity[2],
@@ -955,13 +981,18 @@ def _age_cluster_diagnostics(
     )
 
 
-def _umap_point(raw: dict[str, object]) -> LatentUmapPoint:
+def _umap_point(raw: dict[str, object], annotation: ProbeDisplayAnnotation) -> LatentUmapPoint:
     _exact_keys(raw, {"probe_id", "chromosome", "position", "context", "x", "y"}, "UMAP point")
+    raw_identity = (
+        parse_probe_id(_string(raw, "probe_id")),
+        parse_autosome(_integer(raw, "chromosome")),
+        parse_one_based_position(_integer(raw, "position")),
+        GenomicContext(_string(raw, "context")),
+    )
+    if raw_identity != annotation.locus_identity[:4]:
+        raise ValueError("UMAP point identity differs from the frozen probe table")
     return LatentUmapPoint(
-        probe_id=parse_probe_id(_string(raw, "probe_id")),
-        chromosome=parse_autosome(_integer(raw, "chromosome")),
-        position=parse_one_based_position(_integer(raw, "position")),
-        context=GenomicContext(_string(raw, "context")),
+        annotation=annotation,
         x=_number(raw, "x"),
         y=_number(raw, "y"),
     )
@@ -979,10 +1010,13 @@ def _umap_panels(
     validation_count: int,
     windows: tuple[int, ...],
     dimensions: tuple[int, ...],
+    probes: NonEmptyProbeSet,
+    features: SequenceFeatureArtifact,
 ) -> tuple[tuple[LatentUmapPanel, ...], tuple[str, ...]]:
     panels: list[LatentUmapPanel] = []
     artifact_ids: list[str] = []
     split_name = expected_prefix[3]
+    probe_index_by_id = {probe.probe_id: index for index, probe in enumerate(probes.probes)}
     for window in windows:
         embedding_manifest = embeddings_root / f"window-{window}" / "manifest.json"
         for dimension in dimensions:
@@ -1025,7 +1059,7 @@ def _umap_panels(
                 or _integer(sampling, "age_direction_count") != 1
                 or umap.get("implementation") != "exact_torch_fuzzy_cross_entropy"
                 or umap.get("input_geometry")
-                != "euclidean_on_unit_probe_rows_and_unit_age_direction_equivalent_to_cosine"
+                != "intrinsic_unit_hypersphere_geodesic_arccos_clamped_dot_product"
                 or umap.get("graph") != "exact_knn_default_fuzzy_union"
                 or umap.get("initialization") != "deterministic_normalized_laplacian_spectral"
                 or umap.get("objective")
@@ -1042,6 +1076,7 @@ def _umap_panels(
                     "optimization_steps": _integer(umap_config, "optimization_steps"),
                     "learning_rate": _number(umap_config, "learning_rate"),
                     "seed": _integer(umap_config, "seed"),
+                    "input_metric": _string(umap_config, "input_metric"),
                 }
                 != {
                     "n_neighbors": 15,
@@ -1052,11 +1087,25 @@ def _umap_panels(
                     "optimization_steps": 750,
                     "learning_rate": 0.05,
                     "seed": 618_437,
+                    "input_metric": "spherical_geodesic",
                 }
                 or age_point.get("label") != "learned age direction"
             ):
                 raise ValueError(f"latent UMAP identity differs: {path}")
             raw_points = _objects(record, "points")
+            raw_probe_ids = tuple(
+                parse_probe_id(_string(point, "probe_id")) for point in raw_points
+            )
+            if len(set(raw_probe_ids)) != len(raw_probe_ids):
+                raise ValueError("UMAP record contains duplicate probe IDs")
+            if any(probe_id not in probe_index_by_id for probe_id in raw_probe_ids):
+                raise ValueError("UMAP record contains a probe outside the frozen probe universe")
+            annotations = _probe_annotations(
+                tuple(probe_index_by_id[probe_id] for probe_id in raw_probe_ids),
+                window=window,
+                probes=probes,
+                features=features,
+            )
             panels.append(
                 LatentUmapPanel(
                     window_size=window,
@@ -1072,10 +1121,15 @@ def _umap_panels(
                     spectral_gap=_number(umap, "spectral_gap"),
                     age_x=_number(age_point, "x"),
                     age_y=_number(age_point, "y"),
-                    points=tuple(_umap_point(point) for point in raw_points),
+                    points=tuple(
+                        _umap_point(point, annotation)
+                        for point, annotation in zip(raw_points, annotations, strict=True)
+                    ),
                 )
             )
-            artifact_ids.append(f"validation-latent-umap:{window}:{dimension}:{sha256_file(path)}")
+            artifact_ids.append(
+                f"validation-latent-spherical-umap:{window}:{dimension}:{sha256_file(path)}"
+            )
     return tuple(panels), tuple(artifact_ids)
 
 
@@ -1104,6 +1158,11 @@ def main() -> None:
     data_sha256 = sha256_file(arguments.data / "bundle.json")
     target_sha256 = sha256_file(arguments.data / "targets.safetensors")
     probes = load_probe_table(arguments.data / "probes.tsv")
+    features = load_sequence_features(
+        arguments.data / "sequence-features.safetensors",
+        arguments.data / "sequence-features.json",
+        probes=probes,
+    )
     arguments.results_output.mkdir(parents=True)
     arguments.site_output.mkdir(parents=True)
     for asset in ("index.html", "style.css"):
@@ -1160,7 +1219,6 @@ def main() -> None:
         (
             cluster_diagnostics,
             cluster_agreements,
-            cluster_labels,
             female_sample_count,
             male_sample_count,
             cell_composition_status,
@@ -1189,7 +1247,9 @@ def main() -> None:
             windows=windows,
             evaluations=evaluations,
             direct_records=direct_age_records,
-            cluster_labels=cluster_labels,
+            test_indices=tuple(split.test_indices.tolist()),
+            probes=probes,
+            features=features,
         )
         projection_dimensions = tuple(
             dimension for dimension in map(int, config.sweep.latent_dimensions) if dimension <= 128
@@ -1207,6 +1267,8 @@ def main() -> None:
             validation_count=split.validation_indices.numel(),
             windows=windows,
             dimensions=projection_dimensions,
+            probes=probes,
+            features=features,
         )
         artifact_ids = (
             f"interim-site-compiler-git:{git_commit}",
@@ -1229,7 +1291,8 @@ def main() -> None:
             status=(
                 "Interim report: primary-validated 1 kb and 4 kb selected-model results, "
                 "nested-validation hyperparameter sweeps, and separately labeled post-hoc "
-                "direct-age, distance-integration, scatter-cluster, and latent UMAP analyses."
+                "direct-age, distance-integration, metadata-colored scatter, cluster-audit, "
+                "and spherical-geodesic latent UMAP analyses."
             ),
             disclaimer=(
                 "The planned 16 kb and 64 kb windows and the preregistered 16 kb projection are "

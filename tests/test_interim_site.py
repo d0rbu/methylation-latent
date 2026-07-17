@@ -9,6 +9,8 @@ import pytest
 
 from methylation_latent.domain import (
     GenomicContext,
+    InfiniumDesign,
+    ManifestStrand,
     parse_autosome,
     parse_one_based_position,
     parse_probe_id,
@@ -26,7 +28,7 @@ from methylation_latent.interim_site import (
     KernelWeightPoint,
     LatentUmapPanel,
     LatentUmapPoint,
-    ScatterClusterSeries,
+    ProbeDisplayAnnotation,
     ScatterPredictionSeries,
     TuningSweepPoint,
     build_interim_static_site,
@@ -43,6 +45,25 @@ _MODELS = (
     "psd_distance",
     "psd_distance_plus_sequence",
 )
+
+
+def _annotation(
+    index: int,
+    context: GenomicContext = GenomicContext.ISLAND,
+    *,
+    cpg_density: float = 0.02,
+    gc_content: float = 0.5,
+) -> ProbeDisplayAnnotation:
+    return ProbeDisplayAnnotation(
+        probe_id=parse_probe_id(f"cg{index + 1:08d}"),
+        chromosome=parse_autosome(index % 22 + 1),
+        position=parse_one_based_position(index + 1),
+        context=context,
+        design=InfiniumDesign.TYPE_I if index % 2 == 0 else InfiniumDesign.TYPE_II,
+        manifest_strand=ManifestStrand.FORWARD if index % 2 == 0 else ManifestStrand.REVERSE,
+        cpg_density=cpg_density,
+        gc_content=gc_content,
+    )
 
 
 def _exploratory(
@@ -156,10 +177,7 @@ def _valid() -> InterimSiteData:
                 ScatterPredictionSeries("direct_tanh", (-0.1, 0.3)),
                 ScatterPredictionSeries("full_latent_metric", (0.0, 0.4)),
             ),
-            tuple(
-                ScatterClusterSeries(model, (0, 1))
-                for model in ("cosine_age_only", "direct_tanh", "full_latent_metric")
-            ),
+            (_annotation(0), _annotation(2, GenomicContext.SHORE)),
         ),
         *(
             CorrelationScatterPanel(
@@ -177,10 +195,7 @@ def _valid() -> InterimSiteData:
     )
     umap_points = tuple(
         LatentUmapPoint(
-            probe_id=parse_probe_id(f"cg{index + 1:08d}"),
-            chromosome=parse_autosome(1),
-            position=parse_one_based_position(index + 1),
-            context=context,
+            annotation=_annotation(index, context),
             x=float(index),
             y=float(-index),
         )
@@ -375,6 +390,8 @@ def test_scatter_panel_rejects_misalignment_and_unknown_models() -> None:
         ({"sample_indices": (0, 8)}, "in range"),
         ({"target": (0.1,)}, "aligned"),
         ({"target": (0.1, 1.1)}, "correlations"),
+        ({"annotations": valid.annotations[:1]}, "annotations"),
+        ({"annotations": (valid.annotations[0], valid.annotations[0])}, "annotations"),
         ({"predictions": valid.predictions[:-1]}, "required aligned models"),
         (
             {
@@ -389,6 +406,18 @@ def test_scatter_panel_rejects_misalignment_and_unknown_models() -> None:
     for change, message in cases:
         with pytest.raises(ValueError, match=message):
             replace(valid, **change)
+    pair = _valid().scatter_panels[1]
+    with pytest.raises(ValueError, match="must not contain"):
+        replace(pair, annotations=(_annotation(0), _annotation(1)))
+
+
+@pytest.mark.parametrize("field", ["cpg_density", "gc_content"])
+@pytest.mark.parametrize("value", [-0.01, 1.01, float("nan")])
+def test_probe_display_annotation_rejects_invalid_sequence_features(
+    field: str, value: float
+) -> None:
+    with pytest.raises(ValueError, match=r"\[0,1\]"):
+        replace(_annotation(0), **{field: value})
 
 
 def test_umap_point_and_panel_reject_invalid_geometry() -> None:
@@ -409,7 +438,13 @@ def test_umap_point_and_panel_reject_invalid_geometry() -> None:
             {
                 "points": (
                     panel.points[0],
-                    replace(panel.points[1], context=GenomicContext.ISLAND),
+                    replace(
+                        panel.points[1],
+                        annotation=replace(
+                            panel.points[1].annotation,
+                            context=GenomicContext.ISLAND,
+                        ),
+                    ),
                     *panel.points[2:],
                 )
             },
@@ -419,7 +454,13 @@ def test_umap_point_and_panel_reject_invalid_geometry() -> None:
             {
                 "points": (
                     panel.points[0],
-                    replace(panel.points[1], probe_id=panel.points[0].probe_id),
+                    replace(
+                        panel.points[1],
+                        annotation=replace(
+                            panel.points[1].annotation,
+                            probe_id=panel.points[0].annotation.probe_id,
+                        ),
+                    ),
                     *panel.points[2:],
                 )
             },
@@ -584,7 +625,13 @@ def test_interim_rejects_different_loci_across_umap_panels() -> None:
     changed_second = replace(
         second,
         points=(
-            replace(second.points[0], probe_id=parse_probe_id("cg99999999")),
+            replace(
+                second.points[0],
+                annotation=replace(
+                    second.points[0].annotation,
+                    probe_id=parse_probe_id("cg99999999"),
+                ),
+            ),
             *second.points[1:],
         ),
     )

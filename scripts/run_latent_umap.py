@@ -1,4 +1,4 @@
-"""Project frozen validation latent spaces with deterministic exact Torch UMAP."""
+"""Project unit-sphere validation latents with deterministic geodesic Torch UMAP."""
 
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ from methylation_latent.experiment_data import load_split_artifact
 from methylation_latent.model import LatentMetric, normalize_vector_strict
 from methylation_latent.storage import load_exact_safetensors
 from methylation_latent.tsne import deterministic_balanced_indices
-from methylation_latent.umap import UmapConfig, exact_umap
+from methylation_latent.umap import UmapConfig, UmapInputMetric, exact_umap
 
-_SCHEMA = "methylation-latent.validation-latent-umap.v1"
+_SCHEMA = "methylation-latent.validation-latent-umap.v2"
 _TUNING_SCHEMA = "methylation-latent.latent-tuning-run.v2"
 _MODEL_KEYS = {"age_direction", "projection.weight"}
 _SPLITS = ("diverse-blocks", "held-out-chromosome")
@@ -37,6 +37,7 @@ _LAMBDA_AGE = 0.1
 _MAXIMUM_DISPLAY_POINTS = 300
 _SAMPLING_SEED = 711_301
 _CONFIG = UmapConfig(
+    input_metric=UmapInputMetric.SPHERICAL_GEODESIC,
     n_neighbors=15,
     local_connectivity=1.0,
     smooth_knn_search_steps=64,
@@ -342,8 +343,7 @@ def main() -> None:
                     "umap": {
                         "implementation": "exact_torch_fuzzy_cross_entropy",
                         "input_geometry": (
-                            "euclidean_on_unit_probe_rows_and_unit_age_direction_"
-                            "equivalent_to_cosine"
+                            "intrinsic_unit_hypersphere_geodesic_arccos_clamped_dot_product"
                         ),
                         "graph": "exact_knn_default_fuzzy_union",
                         "initialization": "deterministic_normalized_laplacian_spectral",

@@ -37,11 +37,11 @@ A finalized cache cannot accept another shard.
 | `final-refit.v2` | producer commit and selected-step refit on complete primary training |
 | `held-out-evaluation.v2` | producer commit, separate age/pair metrics, optional 16-kb projection |
 | `site-data.v1` | complete split-specific panels and all contributing artifact IDs |
-| `interim-site-data.v3` | completed-window primary panels plus nested-validation sweeps, cluster-colored correlation scatters, target-aware age-lobe diagnostics, direct tanh age, distance integration, and validation-only UMAP with age direction; cannot substitute for `site-data.v1` |
+| `interim-site-data.v4` | completed-window primary panels plus nested-validation sweeps, probe-annotation-colored age scatters, target-aware age-lobe diagnostics, direct tanh age, distance integration, and validation-only spherical-geodesic UMAP with age direction; cannot substitute for `site-data.v1` |
 | `exploratory-distance-integration.v2` | post-hoc validation-fitted PSD distance/sequence mixture with a deterministic single-thread CPU runtime; never primary-validated |
 | `exploratory-direct-tanh-age.v1` | post-hoc direct `tanh(v·embedding+b)` age baseline with no latent dimension or lambda; never primary-validated on the viewed test partitions |
 | `validation-latent-tsne.v1` | deterministic post-hoc exact-Torch t-SNE of context-balanced nested-validation loci; no test loci or targets |
-| `validation-latent-umap.v1` | deterministic post-hoc exact-Torch UMAP of context-balanced nested-validation loci plus the learned age direction; no test loci or targets |
+| `validation-latent-umap.v2` | deterministic post-hoc exact-Torch UMAP using intrinsic unit-sphere geodesic input distances for context-balanced nested-validation loci plus the learned age direction; no test loci or targets |
 | `prediction-scatter.v1` | display-only target-blind samples from frozen evaluation pairs and held-out age predictions; carries source hashes and performs no fitting |
 | `age-scatter-cluster-audit.v1` | target-aware post-hoc k=2 diagnosis on every frozen-test age-scatter point with context, sequence-feature, probe, chromosome, and sex-stratified associations; never a model-selection artifact |
 

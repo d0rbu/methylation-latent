@@ -12,8 +12,6 @@ const colors = {
   shore: "#4977a3",
   shelf: "#b78105",
   open_sea: "#c43f52",
-  negative_cluster: "#c43f52",
-  positive_cluster: "#006b57",
   age_direction: "#17221d",
 };
 
@@ -53,6 +51,119 @@ const contextLabels = {
   shore: "shore",
   shelf: "shelf",
   open_sea: "open sea",
+};
+const annotationModeLabels = {
+  context: "Genomic context",
+  design: "Infinium chemistry",
+  manifest_strand: "Manifest strand",
+  chromosome: "Chromosome",
+  cpg_density: "CpG density",
+  gc_content: "GC content",
+};
+const annotationModes = Object.keys(annotationModeLabels);
+const categoricalOrders = {
+  context: ["island", "shore", "shelf", "open_sea"],
+  design: ["I", "II"],
+  manifest_strand: ["F", "R"],
+};
+const categoricalLabels = {
+  context: contextLabels,
+  design: { I: "Infinium I", II: "Infinium II" },
+  manifest_strand: { F: "forward assay strand", R: "reverse assay strand" },
+};
+const categoricalColors = {
+  context: Object.fromEntries(Object.keys(contextLabels).map(value => [value, colors[value]])),
+  design: { I: "#b24b16", II: "#4977a3" },
+  manifest_strand: { F: "#006b57", R: "#7a4da3" },
+};
+
+const chromosomeColor = chromosome => `hsl(${(Number(chromosome) * 137.508) % 360} 58% 39%)`;
+const interpolateViridis = proportion => {
+  const anchors = [
+    [68, 1, 84],
+    [33, 145, 140],
+    [253, 231, 37],
+  ];
+  const bounded = Math.max(0, Math.min(1, proportion));
+  const segment = bounded <= 0.5 ? 0 : 1;
+  const offset = segment === 0 ? bounded * 2 : (bounded - 0.5) * 2;
+  const channels = anchors[segment].map((value, index) =>
+    Math.round(value + offset * (anchors[segment + 1][index] - value)));
+  return `rgb(${channels.join(" ")})`;
+};
+
+const annotationColorScale = (annotations, mode) => {
+  if (!annotations.length || !annotationModes.includes(mode)) {
+    throw new Error(`cannot color empty annotations by ${mode}`);
+  }
+  if (mode === "cpg_density" || mode === "gc_content") {
+    const values = annotations.map(annotation => Number(annotation[mode]));
+    if (values.some(value => !Number.isFinite(value) || value < 0 || value > 1)) {
+      throw new Error(`${mode} annotations must be finite values in [0,1]`);
+    }
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    if (minimum === maximum) throw new Error(`${mode} is constant in this display set`);
+    return {
+      color: annotation => interpolateViridis((annotation[mode] - minimum) / (maximum - minimum)),
+      continuous: { minimum, maximum },
+    };
+  }
+  const observed = [...new Set(annotations.map(annotation => String(annotation[mode])))];
+  const order = mode === "chromosome"
+    ? observed.sort((left, right) => Number(left) - Number(right))
+    : categoricalOrders[mode].filter(value => observed.includes(value));
+  if (!order.length || order.length !== observed.length) {
+    throw new Error(`${mode} contains an unknown categorical annotation`);
+  }
+  const colorForValue = value => mode === "chromosome"
+    ? chromosomeColor(value)
+    : categoricalColors[mode][value];
+  return {
+    color: annotation => colorForValue(String(annotation[mode])),
+    entries: order.map(value => [
+      mode === "chromosome" ? `chr${value}` : categoricalLabels[mode][value],
+      colorForValue(value),
+    ]),
+  };
+};
+
+const annotationColorControls = onChange => {
+  const controls = document.createElement("div");
+  controls.className = "color-controls";
+  const label = document.createElement("label");
+  label.textContent = "Color probes by ";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Color probes by");
+  annotationModes.forEach(mode => {
+    const option = document.createElement("option");
+    option.value = mode;
+    option.textContent = annotationModeLabels[mode];
+    select.append(option);
+  });
+  select.addEventListener("change", () => onChange(select.value));
+  label.append(select);
+  controls.append(label);
+  return controls;
+};
+
+const drawAnnotationLegend = (node, scale, mode) => {
+  node.replaceChildren();
+  if (scale.entries) {
+    legend(node, scale.entries);
+    return;
+  }
+  const container = document.createElement("div");
+  container.className = "continuous-legend";
+  const lower = document.createElement("span");
+  lower.textContent = scale.continuous.minimum.toFixed(mode === "cpg_density" ? 5 : 3);
+  const gradient = document.createElement("span");
+  gradient.className = "continuous-gradient";
+  gradient.setAttribute("aria-hidden", "true");
+  const upper = document.createElement("span");
+  upper.textContent = scale.continuous.maximum.toFixed(mode === "cpg_density" ? 5 : 3);
+  container.append(lower, gradient, upper);
+  node.append(container);
 };
 
 const svgElement = (name, attributes = {}, text = null) => {
@@ -189,9 +300,9 @@ const plotNote = text => {
   return note;
 };
 
-const drawCorrelationCanvas = (target, prediction, color, label, clusterLabels = null) => {
+const drawCorrelationCanvas = (target, prediction, pointColors, label) => {
   if (target.length !== prediction.length || !target.length) throw new Error(`${label} scatter vectors differ`);
-  if (clusterLabels !== null && clusterLabels.length !== target.length) throw new Error(`${label} cluster labels differ`);
+  if (Array.isArray(pointColors) && pointColors.length !== target.length) throw new Error(`${label} point colors differ`);
   const [canvas, context, size] = canvasFrame(label);
   const left = 48;
   const right = size - 16;
@@ -230,9 +341,7 @@ const drawCorrelationCanvas = (target, prediction, color, label, clusterLabels =
   target.forEach((value, index) => {
     const x = coordinateX(value);
     const y = coordinateY(prediction[index]);
-    context.fillStyle = clusterLabels === null
-      ? color
-      : colors[clusterLabels[index] === 0 ? "negative_cluster" : "positive_cluster"];
+    context.fillStyle = Array.isArray(pointColors) ? pointColors[index] : pointColors;
     context.fillRect(x - 1.15, y - 1.15, 2.3, 2.3);
   });
   context.globalAlpha = 1;
@@ -274,26 +383,27 @@ const drawAgeScatter = panels => {
       const card = article(`${windowLabel(panel.window_size)} · ${panel.target.length.toLocaleString()} of ${panel.source_count.toLocaleString()} held-out probes shown`);
       const grid = document.createElement("div");
       grid.className = "plot-grid";
-      ["cosine_age_only", "direct_tanh", "full_latent_metric"].forEach(model => {
-        const series = panel.predictions.find(candidate => candidate.model === model);
-        const clusters = panel.clusters.find(candidate => candidate.model === model);
-        if (!series || !clusters) throw new Error(`missing age scatter series or clusters ${model}`);
-        const figure = plotFigure(scatterModelLabels[model]);
-        figure.append(drawCorrelationCanvas(
-          panel.target,
-          series.values,
-          colors[model],
-          `${windowLabel(panel.window_size)} ${scatterModelLabels[model]} predicted versus empirical age correlation`,
-          clusters.labels,
-        ));
-        grid.append(figure);
-      });
-      card.append(grid);
-      legend(card, [
-        ["k=2 lower empirical-age lobe", colors.negative_cluster],
-        ["k=2 higher empirical-age lobe", colors.positive_cluster],
-      ]);
-      card.append(plotNote("Dashed diagonal: perfect prediction. Axes fixed to [−1, 1]. Cluster colors come from the full frozen-test audit, not only the displayed sample."));
+      const legendNode = document.createElement("div");
+      const render = mode => {
+        const scale = annotationColorScale(panel.annotations, mode);
+        const pointColors = panel.annotations.map(scale.color);
+        grid.replaceChildren(...["cosine_age_only", "direct_tanh", "full_latent_metric"].map(model => {
+          const series = panel.predictions.find(candidate => candidate.model === model);
+          if (!series) throw new Error(`missing age scatter series ${model}`);
+          const figure = plotFigure(scatterModelLabels[model]);
+          figure.append(drawCorrelationCanvas(
+            panel.target,
+            series.values,
+            pointColors,
+            `${windowLabel(panel.window_size)} ${scatterModelLabels[model]} predicted versus empirical age correlation colored by ${annotationModeLabels[mode]}`,
+          ));
+          return figure;
+        }));
+        drawAnnotationLegend(legendNode, scale, mode);
+      };
+      card.append(annotationColorControls(render), grid, legendNode);
+      render("context");
+      card.append(plotNote("Dashed diagonal: perfect prediction. Axes fixed to [−1, 1]. Color is a locus annotation only; the target-aware k=2 labels remain confined to the separate diagnostic audit below."));
       node.append(card);
     });
 };
@@ -335,8 +445,9 @@ const drawStar = (context, x, y, outerRadius = 9, innerRadius = 4) => {
   context.stroke();
 };
 
-const drawUmapCanvas = (points, agePoint, label) => {
+const drawUmapCanvas = (points, agePoint, pointColors, label) => {
   if (!points.length) throw new Error(`${label} has no UMAP points`);
+  if (pointColors.length !== points.length) throw new Error(`${label} point colors differ`);
   const [canvas, context, size] = canvasFrame(label, 360);
   const margin = 18;
   const allPoints = [...points, agePoint];
@@ -353,10 +464,10 @@ const drawUmapCanvas = (points, agePoint, label) => {
   context.fillRect(0, 0, size, size);
   context.strokeStyle = "#d7d5ca";
   context.strokeRect(margin, margin, size - 2 * margin, size - 2 * margin);
-  points.forEach(point => {
+  points.forEach((point, index) => {
     context.beginPath();
     context.arc(x(point.x), y(point.y), 2.8, 0, 2 * Math.PI);
-    context.fillStyle = colors[point.context];
+    context.fillStyle = pointColors[index];
     context.globalAlpha = 0.72;
     context.fill();
   });
@@ -372,25 +483,34 @@ const drawLatentUmap = panels => {
     const card = article(`${windowLabel(window)} · λ = 0.1 · validation loci only`);
     const grid = document.createElement("div");
     grid.className = "projection-grid";
-    panels.filter(panel => panel.window_size === window)
-      .sort((a, b) => a.latent_dimension - b.latent_dimension)
-      .forEach(panel => {
+    const windowPanels = panels.filter(panel => panel.window_size === window)
+      .sort((a, b) => a.latent_dimension - b.latent_dimension);
+    if (!windowPanels.length) throw new Error(`missing UMAP panels for ${window}`);
+    const annotations = windowPanels[0].points.map(point => point.annotation);
+    const legendNode = document.createElement("div");
+    const render = mode => {
+      const scale = annotationColorScale(annotations, mode);
+      grid.replaceChildren(...windowPanels.map(panel => {
+        const pointColors = panel.points.map(point => scale.color(point.annotation));
         const figure = plotFigure(`d = ${panel.latent_dimension}`);
         figure.append(
           drawUmapCanvas(
             panel.points,
             { x: panel.age_x, y: panel.age_y },
-            `${windowLabel(window)} d ${panel.latent_dimension} UMAP colored by genomic context with learned age direction`,
+            pointColors,
+            `${windowLabel(window)} d ${panel.latent_dimension} angular UMAP colored by ${annotationModeLabels[mode]} with learned age direction`,
           ),
           plotNote(`n = ${panel.points.length} probes + age · neighbors ${panel.n_neighbors} · min_dist ${panel.min_dist} · final cross-entropy ${metric(panel.final_cross_entropy, 5)}`),
         );
-        grid.append(figure);
-      });
-    card.append(grid);
-    legend(card, Object.entries(contextLabels).map(([key, value]) => [value, colors[key]]));
+        return figure;
+      }));
+      drawAnnotationLegend(legendNode, scale, mode);
+    };
+    card.append(annotationColorControls(render), grid, legendNode);
+    render("context");
     const ageLegend = document.createElement("p");
     ageLegend.className = "plot-note";
-    ageLegend.textContent = "★ learned age direction (included as a point in the UMAP graph)";
+    ageLegend.textContent = "★ learned age direction (included as a point in the angular-distance UMAP graph)";
     card.append(ageLegend);
     node.append(card);
   });

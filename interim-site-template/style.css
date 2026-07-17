@@ -58,6 +58,19 @@ svg { width: 100%; min-width: 740px; height: 350px; }
 .label { fill: var(--muted); font-size: 11px; }
 .axis-title { fill: var(--muted); font-size: 12px; font-weight: 650; }
 .legend { display: flex; flex-wrap: wrap; gap: .9rem; color: var(--muted); font-size: .86rem; }
+.color-controls { display: flex; align-items: center; color: var(--muted); font-size: .86rem; }
+.color-controls label { font-weight: 700; }
+.color-controls select {
+  margin-left: .35rem;
+  padding: .34rem .5rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  background: var(--card);
+  font: inherit;
+}
+.continuous-legend { display: flex; gap: .55rem; align-items: center; color: var(--muted); font-size: .82rem; font-variant-numeric: tabular-nums; }
+.continuous-gradient { width: min(280px, 60vw); height: .8rem; border: 1px solid var(--line); border-radius: 999px; background: linear-gradient(90deg, rgb(68 1 84), rgb(33 145 140), rgb(253 231 37)); }
 table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: .84rem; font-variant-numeric: tabular-nums; }
 th, td { padding: .48rem; border-bottom: 1px solid var(--line); text-align: right; }
 th:first-child, td:first-child { text-align: left; }

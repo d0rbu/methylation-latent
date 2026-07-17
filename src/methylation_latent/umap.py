@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import cache
 
 import torch as t
@@ -18,11 +19,20 @@ Float64NeighborMatrix = Float64[t.Tensor, "points neighbors"]
 
 _SMOOTH_K_TOLERANCE = 1.0e-5
 _MIN_K_DISTANCE_SCALE = 1.0e-3
+_SPHERICAL_NORM_ABSOLUTE_TOLERANCE = 2.0e-7
+
+
+class UmapInputMetric(StrEnum):
+    """Input-space metric used to construct the exact fuzzy-neighborhood graph."""
+
+    EUCLIDEAN = "euclidean"
+    SPHERICAL_GEODESIC = "spherical_geodesic"
 
 
 @beartype
 @dataclass(frozen=True, slots=True)
 class UmapConfig:
+    input_metric: UmapInputMetric
     n_neighbors: int
     local_connectivity: float
     smooth_knn_search_steps: int
@@ -144,7 +154,42 @@ def _validate_input(values: t.Tensor, config: UmapConfig) -> Float64FeatureMatri
     prepared = values.to(device="cpu", dtype=t.float64)
     if t.unique(prepared, dim=0).shape[0] != prepared.shape[0]:
         raise ValueError("UMAP input contains duplicate feature rows")
+    if config.input_metric is UmapInputMetric.SPHERICAL_GEODESIC:
+        norms = t.linalg.vector_norm(prepared, dim=1)
+        if not t.allclose(
+            norms,
+            t.ones_like(norms),
+            atol=_SPHERICAL_NORM_ABSOLUTE_TOLERANCE,
+            rtol=0.0,
+        ):
+            maximum_error = float(t.max(t.abs(norms - 1.0)).item())
+            raise ValueError(
+                "spherical-geodesic UMAP requires unit-norm rows: "
+                f"maximum_absolute_error={maximum_error}"
+            )
     return prepared
+
+
+@jaxtyped(typechecker=beartype)
+def _pairwise_input_distances(
+    prepared: Float64FeatureMatrix,
+    *,
+    metric: UmapInputMetric,
+) -> Float64SquareMatrix:
+    if metric is UmapInputMetric.EUCLIDEAN:
+        pairwise = t.cdist(prepared, prepared)
+    elif metric is UmapInputMetric.SPHERICAL_GEODESIC:
+        similarities = prepared @ prepared.mT
+        similarities = (similarities + similarities.mT) / 2.0
+        pairwise = t.acos(t.clamp(similarities, min=-1.0, max=1.0))
+    else:
+        raise AssertionError(f"unhandled UMAP input metric: {metric!r}")
+    pairwise.fill_diagonal_(0.0)
+    if not t.equal(pairwise, pairwise.mT):
+        raise RuntimeError("UMAP input-distance matrix is not exactly symmetric")
+    if not bool(t.isfinite(pairwise).all().item()) or bool(t.any(pairwise < 0.0).item()):
+        raise RuntimeError("UMAP input distances must be finite and non-negative")
+    return pairwise
 
 
 @jaxtyped(typechecker=beartype)
@@ -192,9 +237,8 @@ def fuzzy_simplicial_graph(values: t.Tensor, *, config: UmapConfig) -> UmapGraph
     """Build the exact-kNN default fuzzy-union graph used by UMAP."""
 
     prepared = _validate_input(values, config)
-    pairwise = t.cdist(prepared, prepared)
+    pairwise = _pairwise_input_distances(prepared, metric=config.input_metric)
     count = prepared.shape[0]
-    pairwise.fill_diagonal_(0.0)
     masked = pairwise.masked_fill(t.eye(count, dtype=t.bool), float("inf"))
     neighbor_indices = t.argsort(masked, dim=1, stable=True)[:, : config.n_neighbors - 1]
     self_indices = t.arange(count, dtype=t.int64)[:, None]

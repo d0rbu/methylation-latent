@@ -63,7 +63,9 @@
         <h2>Predicted versus empirical age association</h2>
         <p>The direct baseline is exactly <code>tanh(v·embedding + b)</code>: one scalar output,
           no latent dimension, and no λ. Scatter samples are target-blind and frozen, but the
-          direct-tanh architecture was chosen after the original test results were viewed.</p>
+          direct-tanh architecture was chosen after the original test results were viewed. Use
+          each card's selector to recolor the same probes by genomic context, Infinium chemistry,
+          manifest strand, chromosome, CpG density, or GC content.</p>
         <div id="direct-age-metrics" class="panel"></div>
         <div id="age-scatter" class="panel scatter-panel"></div>
       </section>
@@ -99,13 +101,17 @@
       <section class="exploratory">
         <p class="section-label exploratory-label">Nested validation only · post-hoc visualization</p>
         <h2>Latent geometry across dimensionality</h2>
-        <p>Deterministic exact-Torch UMAP for the full models at λ = 0.1 and d = 16, 32, 64, 128.
+        <p>Deterministic exact-Torch angular UMAP for the full models at λ = 0.1 and
+          d = 16, 32, 64, 128. High-dimensional neighbor distances are intrinsic unit-sphere
+          geodesics, <code>acos(clamp(zᵢ·zⱼ))</code>, rather than Euclidean chord lengths.
           Every panel uses the same 300 validation loci, balanced to 75 per genomic context,
           plus the normalized learned age direction as a separately marked point. No test loci or
-          targets enter these projections.</p>
+          targets enter these projections. The color selector exposes the same six locus
+          annotations as the age scatter.</p>
         <p class="empty">UMAP preserves fuzzy local neighborhoods; axis orientation and global
-          distances are not directly interpretable. These panels are descriptive and are not a
-          model-selection metric.</p>
+          distances are not directly interpretable. The output remains a flat 2D visualization;
+          only the input-neighborhood metric is sphere-intrinsic. These panels are descriptive and
+          are not a model-selection metric.</p>
         <div id="latent-umap" class="panel projection-panel"></div>
       </section>
       <section>

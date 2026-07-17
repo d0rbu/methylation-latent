@@ -11,6 +11,11 @@ fit to all frozen-test points in standardized two-dimensional `(empirical rho, p
 space. Cluster labels are ordered by their empirical-rho center. Using empirical rho makes the
 labels useful for diagnosis but invalid for model selection.
 
+The results site does not use these target-aware labels to color the scatter points. It exposes
+separate target-blind views colored by locus annotations and keeps k-means confined to the audit
+tables. This prevents a diagnostic constructed from empirical rho from visually masquerading as an
+input feature.
+
 ## Findings
 
 The lobes are principally negative-age-association versus positive-age-association CpGs. The

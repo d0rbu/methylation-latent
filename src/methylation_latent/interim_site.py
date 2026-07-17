@@ -10,11 +10,18 @@ from pathlib import Path
 from typing import cast
 
 from methylation_latent.artifacts import JsonValue, canonical_json_bytes
-from methylation_latent.domain import Autosome, GenomicContext, OneBasedPosition, ProbeId
+from methylation_latent.domain import (
+    Autosome,
+    GenomicContext,
+    InfiniumDesign,
+    ManifestStrand,
+    OneBasedPosition,
+    ProbeId,
+)
 from methylation_latent.evaluation import DISTANCE_CLASS_LABELS, PairPopulation
 from methylation_latent.site import AgeMetricPoint, DistanceMetricPoint, WindowSweepPoint
 
-INTERIM_SITE_SCHEMA = "methylation-latent.interim-site-data.v3"
+INTERIM_SITE_SCHEMA = "methylation-latent.interim-site-data.v4"
 EXPLORATORY_MODELS = frozenset(
     {
         "sequence",
@@ -169,15 +176,36 @@ class ScatterPredictionSeries:
 
 
 @dataclass(frozen=True, slots=True)
-class ScatterClusterSeries:
-    model: str
-    labels: tuple[int, ...]
+class ProbeDisplayAnnotation:
+    probe_id: ProbeId
+    chromosome: Autosome
+    position: OneBasedPosition
+    context: GenomicContext
+    design: InfiniumDesign
+    manifest_strand: ManifestStrand
+    cpg_density: float
+    gc_content: float
 
     def __post_init__(self) -> None:
-        if not self.model or not self.labels:
-            raise ValueError("scatter cluster labels must be named and non-empty")
-        if set(self.labels) != {0, 1}:
-            raise ValueError("scatter cluster labels must contain both zero and one")
+        for value, name in (
+            (self.cpg_density, "CpG density"),
+            (self.gc_content, "GC content"),
+        ):
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} display annotation must lie in [0,1]")
+
+    @property
+    def locus_identity(
+        self,
+    ) -> tuple[ProbeId, Autosome, OneBasedPosition, GenomicContext, InfiniumDesign, ManifestStrand]:
+        return (
+            self.probe_id,
+            self.chromosome,
+            self.position,
+            self.context,
+            self.design,
+            self.manifest_strand,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +217,7 @@ class CorrelationScatterPanel:
     sample_indices: tuple[int, ...]
     target: tuple[float, ...]
     predictions: tuple[ScatterPredictionSeries, ...]
-    clusters: tuple[ScatterClusterSeries, ...]
+    annotations: tuple[ProbeDisplayAnnotation, ...]
 
     def __post_init__(self) -> None:
         if self.window_size <= 0 or self.source_count <= 0:
@@ -216,23 +244,17 @@ class CorrelationScatterPanel:
         ):
             raise ValueError("scatter prediction series differ from the required aligned models")
         if self.population == "age":
-            cluster_models = tuple(series.model for series in self.clusters)
-            if (
-                len(set(cluster_models)) != len(cluster_models)
-                or set(cluster_models) != _AGE_CLUSTER_MODELS
-                or any(len(series.labels) != len(self.target) for series in self.clusters)
-            ):
-                raise ValueError("age scatter cluster labels differ from the aligned models")
-        elif self.clusters:
-            raise ValueError("pair scatter panels must not contain age-cluster labels")
+            if len(self.annotations) != len(self.target) or len(
+                {annotation.probe_id for annotation in self.annotations}
+            ) != len(self.annotations):
+                raise ValueError("age scatter annotations must align to unique displayed probes")
+        elif self.annotations:
+            raise ValueError("pair scatter panels must not contain probe annotations")
 
 
 @dataclass(frozen=True, slots=True)
 class LatentUmapPoint:
-    probe_id: ProbeId
-    chromosome: Autosome
-    position: OneBasedPosition
-    context: GenomicContext
+    annotation: ProbeDisplayAnnotation
     x: float
     y: float
 
@@ -291,10 +313,10 @@ class LatentUmapPanel:
         expected_count = self.count_per_context * len(GenomicContext)
         if len(self.points) != expected_count:
             raise ValueError("UMAP points must have the declared balanced context count")
-        contexts = tuple(point.context for point in self.points)
+        contexts = tuple(point.annotation.context for point in self.points)
         if any(contexts.count(context) != self.count_per_context for context in GenomicContext):
             raise ValueError("UMAP points must be exactly balanced across genomic contexts")
-        probe_ids = tuple(point.probe_id for point in self.points)
+        probe_ids = tuple(point.annotation.probe_id for point in self.points)
         if len(set(probe_ids)) != len(probe_ids):
             raise ValueError("UMAP panel contains duplicate probe IDs")
 
@@ -544,18 +566,23 @@ class InterimSiteData:
         if len(set(umap_keys)) != len(umap_keys) or set(umap_keys) != expected_umap:
             raise ValueError("UMAP panels must cover every dimension through 128 at lambda 0.1")
         point_identity = tuple(
-            (point.probe_id, point.chromosome, point.position, point.context)
-            for point in self.latent_umap_panels[0].points
+            point.annotation.locus_identity for point in self.latent_umap_panels[0].points
         )
         if any(
-            tuple(
-                (point.probe_id, point.chromosome, point.position, point.context)
-                for point in panel.points
-            )
-            != point_identity
+            tuple(point.annotation.locus_identity for point in panel.points) != point_identity
             for panel in self.latent_umap_panels[1:]
         ):
             raise ValueError("every UMAP panel must use the same ordered validation loci")
+        for window in windows:
+            panels = tuple(
+                panel for panel in self.latent_umap_panels if panel.window_size == window
+            )
+            first_annotations = tuple(point.annotation for point in panels[0].points)
+            if any(
+                tuple(point.annotation for point in panel.points) != first_annotations
+                for panel in panels[1:]
+            ):
+                raise ValueError("UMAP annotations must be identical within each window")
         cluster_keys = tuple(
             (point.window_size, point.model) for point in self.age_cluster_diagnostics
         )
@@ -575,26 +602,19 @@ class InterimSiteData:
             agreements = tuple(
                 point for point in self.age_cluster_agreements if point.window_size == window
             )
-            if (
-                {point.source_count for point in diagnostics} != {agreements[0].source_count}
-                or {point.female_sample_count for point in diagnostics}
-                != {self.female_sample_count}
-                or {point.male_sample_count for point in diagnostics} != {self.male_sample_count}
-            ):
-                raise ValueError("age-cluster source and phenotype counts differ across panels")
             scatter = next(
                 point
                 for point in self.scatter_panels
                 if point.window_size == window and point.population == "age"
             )
-            diagnostics_by_model = {point.model: point for point in diagnostics}
-            for series in scatter.clusters:
-                diagnostic = diagnostics_by_model[series.model]
-                if (
-                    series.labels.count(0) > diagnostic.negative_count
-                    or series.labels.count(1) > diagnostic.positive_count
-                ):
-                    raise ValueError("scatter cluster sample counts exceed the full audit counts")
+            if (
+                {point.source_count for point in diagnostics} != {agreements[0].source_count}
+                or scatter.source_count != agreements[0].source_count
+                or {point.female_sample_count for point in diagnostics}
+                != {self.female_sample_count}
+                or {point.male_sample_count for point in diagnostics} != {self.male_sample_count}
+            ):
+                raise ValueError("age-cluster source and phenotype counts differ across panels")
         tuning_keys = tuple(
             (point.window_size, point.latent_dimension, point.lambda_age)
             for point in self.tuning_sweep

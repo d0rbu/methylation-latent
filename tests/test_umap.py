@@ -8,6 +8,7 @@ import torch as t
 from methylation_latent.umap import (
     UmapConfig,
     UmapGraph,
+    UmapInputMetric,
     exact_umap,
     fit_default_curve_parameters,
     fuzzy_simplicial_graph,
@@ -16,6 +17,7 @@ from methylation_latent.umap import (
 
 def _config() -> UmapConfig:
     return UmapConfig(
+        input_metric=UmapInputMetric.EUCLIDEAN,
         n_neighbors=4,
         local_connectivity=1.0,
         smooth_knn_search_steps=64,
@@ -49,6 +51,48 @@ def test_fuzzy_graph_forces_mathematical_self_distance_to_exact_zero() -> None:
     values = t.randn((20, 32), generator=generator, dtype=t.float64)
     graph = fuzzy_simplicial_graph(values, config=replace(_config(), n_neighbors=8))
     assert t.equal(graph.memberships.diagonal(), t.zeros(20, dtype=t.float64))
+
+
+def test_spherical_graph_uses_intrinsic_great_circle_distance() -> None:
+    angles = t.tensor((0.0, 0.2, 1.0, 2.5), dtype=t.float64)
+    values = t.stack((t.cos(angles), t.sin(angles)), dim=1)
+    graph = fuzzy_simplicial_graph(
+        values,
+        config=replace(
+            _config(),
+            input_metric=UmapInputMetric.SPHERICAL_GEODESIC,
+            n_neighbors=3,
+        ),
+    )
+    assert t.allclose(
+        graph.rhos,
+        t.tensor((0.2, 0.2, 0.8, 1.5), dtype=t.float64),
+        atol=2.0e-15,
+        rtol=0.0,
+    )
+
+
+def test_spherical_graph_rejects_non_unit_rows() -> None:
+    with pytest.raises(ValueError, match="unit-norm rows"):
+        fuzzy_simplicial_graph(
+            _values(),
+            config=replace(
+                _config(),
+                input_metric=UmapInputMetric.SPHERICAL_GEODESIC,
+            ),
+        )
+
+
+def test_spherical_umap_is_deterministic_on_unit_vectors() -> None:
+    values = t.nn.functional.normalize(_values(), dim=1)
+    config = replace(
+        _config(),
+        input_metric=UmapInputMetric.SPHERICAL_GEODESIC,
+    )
+    first = exact_umap(values, config=config)
+    second = exact_umap(values, config=config)
+    assert t.equal(first.coordinates, second.coordinates)
+    assert first.final_cross_entropy == second.final_cross_entropy
 
 
 @pytest.mark.parametrize(

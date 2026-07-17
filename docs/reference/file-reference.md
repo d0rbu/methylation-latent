@@ -13,7 +13,7 @@
 | `scripts/run_prediction_scatter.py` | Display-only predicted-versus-empirical correlation samples |
 | `scripts/analyze_age_scatter_clusters.py` | Target-aware post-hoc k=2 audit of age-scatter lobes and phenotype/sequence associations |
 | `scripts/run_latent_tsne.py` | Deterministic exact-Torch t-SNE of context-balanced validation latent spaces |
-| `scripts/run_latent_umap.py` | Deterministic exact-Torch UMAP of context-balanced validation latent spaces plus the learned age direction |
+| `scripts/run_latent_umap.py` | Deterministic exact-Torch spherical-geodesic UMAP of context-balanced validation latent spaces plus the learned age direction |
 | `scripts/compile_interim_results_site.py` | Compile completed windows, validation sweeps, and explicitly post-hoc panels into a non-primary site |
 | `scripts/compile_results_site.py` | Compile validated evaluation records into static sites |
 | `results/` | Compact validated site-data artifacts after experiment completion |
@@ -49,7 +49,7 @@
 | `scatter.py` | Target-blind display sampling and bounded correlation scatter records |
 | `age_clusters.py` | Deterministic k=2, association effect sizes, label agreement, and sex-stratified age correlations |
 | `tsne.py` | Deterministic exact Torch t-SNE and balanced metadata sampling |
-| `umap.py` | Exact Torch fuzzy-neighborhood UMAP graph, spectral initialization, and full cross-entropy objective |
+| `umap.py` | Exact Torch fuzzy-neighborhood UMAP with Euclidean or intrinsic spherical-geodesic input metrics, spectral initialization, and full cross-entropy objective |
 | `artifacts.py` | Canonical JSON and hashing |
 | `storage.py` | Strict safetensors persistence |
 | `site.py` | Site-data validation and static generation |
