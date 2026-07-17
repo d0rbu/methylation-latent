@@ -44,6 +44,13 @@ section.exploratory { border-color: #c8b1d5; background: #fdf9ff; }
 .progress .pending { color: #725024; background: #eee5d4; }
 .panel { min-height: 150px; display: grid; gap: 1.6rem; overflow-x: auto; }
 .panel article { display: grid; gap: .55rem; width: 100%; }
+.scatter-panel, .projection-panel { overflow: visible; }
+.plot-grid, .projection-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 1rem; align-items: start; }
+figure { margin: 0; display: grid; gap: .45rem; justify-items: center; }
+.single-plot { justify-self: start; }
+.plot-title { justify-self: start; width: 100%; font-weight: 700; color: var(--ink); }
+.plot-note { margin: 0; color: var(--muted); font-size: .82rem; }
+canvas { display: block; max-width: 100%; height: auto !important; border-radius: 8px; }
 .empty { color: var(--muted); max-width: 72ch; }
 svg { width: 100%; min-width: 740px; height: 350px; }
 .axis { stroke: #7e8983; stroke-width: 1.2; }

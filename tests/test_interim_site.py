@@ -7,12 +7,23 @@ from pathlib import Path
 
 import pytest
 
+from methylation_latent.domain import (
+    GenomicContext,
+    parse_autosome,
+    parse_one_based_position,
+    parse_probe_id,
+)
 from methylation_latent.evaluation import PairPopulation
 from methylation_latent.interim_site import (
     INTERIM_SITE_SCHEMA,
+    CorrelationScatterPanel,
+    ExploratoryAgeMetricPoint,
     ExploratoryMetricPoint,
     InterimSiteData,
     KernelWeightPoint,
+    LatentTsnePanel,
+    LatentTsnePoint,
+    ScatterPredictionSeries,
     TuningSweepPoint,
     build_interim_static_site,
 )
@@ -92,6 +103,46 @@ def _valid() -> InterimSiteData:
         for point in primary_distance
         for model in ("sequence", "psd_distance", "psd_distance_plus_sequence")
     )
+    scatter_target = (-0.1, 0.2)
+    scatter_indices = (0, 2)
+    scatter_panels = (
+        CorrelationScatterPanel(
+            1024,
+            "age",
+            3,
+            7,
+            scatter_indices,
+            scatter_target,
+            (
+                ScatterPredictionSeries("cosine_age_only", (-0.2, 0.1)),
+                ScatterPredictionSeries("direct_tanh", (-0.1, 0.3)),
+                ScatterPredictionSeries("full_latent_metric", (0.0, 0.4)),
+            ),
+        ),
+        *(
+            CorrelationScatterPanel(
+                1024,
+                population.value,
+                3,
+                8,
+                scatter_indices,
+                scatter_target,
+                (ScatterPredictionSeries("full_latent_metric", (-0.1, 0.1)),),
+            )
+            for population in _POPULATIONS
+        ),
+    )
+    tsne_points = tuple(
+        LatentTsnePoint(
+            probe_id=parse_probe_id(f"cg{index + 1:08d}"),
+            chromosome=parse_autosome(1),
+            position=parse_one_based_position(index + 1),
+            context=context,
+            x=float(index),
+            y=float(-index),
+        )
+        for index, context in enumerate(GenomicContext)
+    )
     return InterimSiteData(
         schema=INTERIM_SITE_SCHEMA,
         protocol_id="protocol-v2",
@@ -112,6 +163,9 @@ def _valid() -> InterimSiteData:
         primary_window_sweep=primary_window,
         primary_distance_metrics=primary_distance,
         primary_age_metrics=primary_age,
+        exploratory_age_metrics=(ExploratoryAgeMetricPoint(1024, 10, 100, 0.04, 0.05, 0.2, -0.1),),
+        scatter_panels=scatter_panels,
+        latent_tsne_panels=(LatentTsnePanel(1024, 16, 0.1, 10, 1, 2.0, 0.5, tsne_points),),
         exploratory_uniform_metrics=uniform,
         exploratory_distance_metrics=by_distance,
         kernel_weights=(
@@ -213,6 +267,104 @@ def test_kernel_weight_rejects_invalid_state(change: dict[str, object], message:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
+        ({"window_size": 0}, "counts"),
+        ({"count": 0}, "counts"),
+        ({"selected_step": -1}, "selected step"),
+        ({"validation_mse": float("nan")}, "finite"),
+        ({"mse": -0.1}, "non-negative"),
+        ({"pearson": 1.1}, "Pearson"),
+    ],
+)
+def test_exploratory_age_metric_rejects_invalid_state(
+    change: dict[str, object], message: str
+) -> None:
+    point = ExploratoryAgeMetricPoint(1024, 10, 100, 0.04, 0.05, 0.2, -0.1)
+    with pytest.raises(ValueError, match=message):
+        replace(point, **change)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"model": ""}, "named"),
+        ({"values": ()}, "non-empty"),
+        ({"values": (float("nan"),)}, "correlations"),
+        ({"values": (1.1,)}, "correlations"),
+    ],
+)
+def test_scatter_series_rejects_invalid_state(change: dict[str, object], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        replace(ScatterPredictionSeries("full_latent_metric", (0.1,)), **change)
+
+
+def test_scatter_panel_rejects_misalignment_and_unknown_models() -> None:
+    valid = _valid().scatter_panels[0]
+    cases: tuple[tuple[dict[str, object], str], ...] = (
+        ({"window_size": 0}, "positive"),
+        ({"source_count": 0}, "positive"),
+        ({"population": "training"}, "unknown"),
+        ({"sample_indices": (1, 0)}, "increasing"),
+        ({"sample_indices": (0, 3)}, "in range"),
+        ({"target": (0.1,)}, "aligned"),
+        ({"target": (0.1, 1.1)}, "correlations"),
+        ({"predictions": valid.predictions[:-1]}, "required aligned models"),
+        (
+            {
+                "predictions": (
+                    *valid.predictions[:-1],
+                    ScatterPredictionSeries("full_latent_metric", (0.1,)),
+                )
+            },
+            "required aligned models",
+        ),
+    )
+    for change, message in cases:
+        with pytest.raises(ValueError, match=message):
+            replace(valid, **change)
+
+
+def test_tsne_point_and_panel_reject_invalid_geometry() -> None:
+    data = _valid()
+    point = data.latent_tsne_panels[0].points[0]
+    with pytest.raises(ValueError, match="finite"):
+        replace(point, x=float("nan"))
+    panel = data.latent_tsne_panels[0]
+    cases: tuple[tuple[dict[str, object], str], ...] = (
+        ({"window_size": 0}, "inconsistent"),
+        ({"source_count": 3}, "inconsistent"),
+        ({"perplexity": 4.0}, "inconsistent"),
+        ({"final_kl_divergence": float("nan")}, "finite"),
+        ({"final_kl_divergence": -0.1}, "non-negative"),
+        ({"count_per_context": 2}, "balanced context count"),
+        (
+            {
+                "points": (
+                    panel.points[0],
+                    replace(panel.points[1], context=GenomicContext.ISLAND),
+                    *panel.points[2:],
+                )
+            },
+            "balanced across",
+        ),
+        (
+            {
+                "points": (
+                    panel.points[0],
+                    replace(panel.points[1], probe_id=panel.points[0].probe_id),
+                    *panel.points[2:],
+                )
+            },
+            "duplicate",
+        ),
+    )
+    for change, message in cases:
+        with pytest.raises(ValueError, match=message):
+            replace(panel, **change)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
         ({"schema": "primary"}, "identity"),
         ({"protocol_id": ""}, "identity"),
         ({"data_sha256": "bad"}, "SHA-256"),
@@ -225,6 +377,8 @@ def test_kernel_weight_rejects_invalid_state(change: dict[str, object], message:
         ({"artifact_ids": ()}, "artifact IDs"),
         ({"artifact_ids": ("same", "same")}, "artifact IDs"),
         ({"tuning_sweep": ()}, "every completed-results"),
+        ({"scatter_panels": ()}, "every completed-results"),
+        ({"latent_tsne_panels": ()}, "every completed-results"),
     ],
 )
 def test_interim_envelope_rejects_invalid_state(change: dict[str, object], message: str) -> None:
@@ -282,10 +436,84 @@ def test_interim_cross_panel_contract_rejects_incomplete_or_duplicate_keys() -> 
             (data.kernel_weights[0], replace(data.kernel_weights[1], weight=0.5)),
             "sum to one",
         ),
+        (
+            "exploratory_age_metrics",
+            (*data.exploratory_age_metrics, data.exploratory_age_metrics[0]),
+            "direct tanh age",
+        ),
+        (
+            "scatter_panels",
+            data.scatter_panels[:-1],
+            "scatter panels",
+        ),
+        (
+            "latent_tsne_panels",
+            (replace(data.latent_tsne_panels[0], lambda_age=1.0),),
+            "through 128",
+        ),
     )
     for field, changed, message in cases:
         with pytest.raises(ValueError, match=message):
             replace(data, **{field: changed})
+
+
+def test_interim_rejects_different_loci_across_tsne_panels() -> None:
+    data = _valid()
+    second = replace(data.latent_tsne_panels[0], window_size=2048)
+    expanded = replace(
+        data,
+        completed_windows=(1024, 2048),
+        planned_windows=(1024, 2048, 4096),
+        primary_window_sweep=(
+            *data.primary_window_sweep,
+            *(replace(point, window_size=2048) for point in data.primary_window_sweep),
+        ),
+        primary_distance_metrics=(
+            *data.primary_distance_metrics,
+            *(replace(point, window_size=2048) for point in data.primary_distance_metrics),
+        ),
+        primary_age_metrics=(
+            *data.primary_age_metrics,
+            *(replace(point, window_size=2048) for point in data.primary_age_metrics),
+        ),
+        exploratory_age_metrics=(
+            *data.exploratory_age_metrics,
+            replace(data.exploratory_age_metrics[0], window_size=2048),
+        ),
+        scatter_panels=(
+            *data.scatter_panels,
+            *(replace(point, window_size=2048) for point in data.scatter_panels),
+        ),
+        latent_tsne_panels=(data.latent_tsne_panels[0], second),
+        tuning_sweep=(
+            data.tuning_sweep[0],
+            replace(data.tuning_sweep[0], window_size=2048),
+        ),
+        exploratory_uniform_metrics=(
+            *data.exploratory_uniform_metrics,
+            *(replace(point, window_size=2048) for point in data.exploratory_uniform_metrics),
+        ),
+        exploratory_distance_metrics=(
+            *data.exploratory_distance_metrics,
+            *(replace(point, window_size=2048) for point in data.exploratory_distance_metrics),
+        ),
+        kernel_weights=(
+            *data.kernel_weights,
+            *(replace(point, window_size=2048) for point in data.kernel_weights),
+        ),
+    )
+    changed_second = replace(
+        second,
+        points=(
+            replace(second.points[0], probe_id=parse_probe_id("cg99999999")),
+            *second.points[1:],
+        ),
+    )
+    with pytest.raises(ValueError, match="same ordered validation loci"):
+        replace(
+            expanded,
+            latent_tsne_panels=(data.latent_tsne_panels[0], changed_second),
+        )
 
 
 def test_selected_tuning_candidate_must_match_primary_configuration() -> None:

@@ -11,6 +11,7 @@
 | `scripts/run_distance_integration.py` | Post-hoc validation-fitted PSD distance integration |
 | `scripts/run_direct_tanh_age.py` | Post-hoc direct scalar tanh age-only baseline |
 | `scripts/run_prediction_scatter.py` | Display-only predicted-versus-empirical correlation samples |
+| `scripts/run_latent_tsne.py` | Deterministic exact-Torch t-SNE of context-balanced validation latent spaces |
 | `scripts/compile_interim_results_site.py` | Compile completed windows, validation sweeps, and explicitly post-hoc panels into a non-primary site |
 | `scripts/compile_results_site.py` | Compile validated evaluation records into static sites |
 | `results/` | Compact validated site-data artifacts after experiment completion |
@@ -42,6 +43,9 @@
 | `evaluation.py` | Pair sampling, distance reference, metrics, and projection |
 | `evaluation_cache.py` | Immutable pair-index/target artifacts |
 | `distance_integration.py` | PSD distance kernels and exact simplex-constrained mixtures |
+| `direct_age.py` | Direct scalar tanh age baseline with no latent dimension or lambda |
+| `scatter.py` | Target-blind display sampling and bounded correlation scatter records |
+| `tsne.py` | Deterministic exact Torch t-SNE and balanced metadata sampling |
 | `artifacts.py` | Canonical JSON and hashing |
 | `storage.py` | Strict safetensors persistence |
 | `site.py` | Site-data validation and static generation |

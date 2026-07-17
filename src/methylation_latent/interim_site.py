@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import cast
 
 from methylation_latent.artifacts import JsonValue, canonical_json_bytes
+from methylation_latent.domain import Autosome, GenomicContext, OneBasedPosition, ProbeId
 from methylation_latent.evaluation import DISTANCE_CLASS_LABELS, PairPopulation
 from methylation_latent.site import AgeMetricPoint, DistanceMetricPoint, WindowSweepPoint
 
-INTERIM_SITE_SCHEMA = "methylation-latent.interim-site-data.v1"
+INTERIM_SITE_SCHEMA = "methylation-latent.interim-site-data.v2"
 EXPLORATORY_MODELS = frozenset(
     {
         "sequence",
@@ -27,6 +28,9 @@ _PAIR_POPULATIONS = frozenset(
 )
 _AGE_STAGES = frozenset({"sequence_features", "caduceus_age_only", "full_latent_metric"})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", flags=re.ASCII)
+_SCATTER_POPULATIONS = frozenset({"age", *(population.value for population in _PAIR_POPULATIONS)})
+_AGE_SCATTER_MODELS = frozenset({"cosine_age_only", "direct_tanh", "full_latent_metric"})
+_PAIR_SCATTER_MODELS = frozenset({"full_latent_metric"})
 
 
 def _finite(value: float, name: str) -> None:
@@ -126,6 +130,132 @@ class KernelWeightPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class ExploratoryAgeMetricPoint:
+    window_size: int
+    count: int
+    selected_step: int
+    validation_mse: float
+    mse: float
+    pearson: float
+    r_squared: float
+
+    def __post_init__(self) -> None:
+        if self.window_size <= 0 or self.count <= 0 or self.selected_step < 0:
+            raise ValueError("direct-age metric counts and selected step must be non-negative")
+        for name, value in (
+            ("validation_mse", self.validation_mse),
+            ("mse", self.mse),
+            ("pearson", self.pearson),
+            ("r_squared", self.r_squared),
+        ):
+            _finite(value, name)
+        if self.validation_mse < 0.0 or self.mse < 0.0:
+            raise ValueError("direct-age MSE values must be non-negative")
+        if not -1.0 <= self.pearson <= 1.0:
+            raise ValueError("direct-age Pearson must lie in [-1,1]")
+
+
+@dataclass(frozen=True, slots=True)
+class ScatterPredictionSeries:
+    model: str
+    values: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if not self.model or not self.values:
+            raise ValueError("scatter prediction series must be named and non-empty")
+        if any(not math.isfinite(value) or not -1.0 <= value <= 1.0 for value in self.values):
+            raise ValueError("scatter predictions must be finite correlations in [-1,1]")
+
+
+@dataclass(frozen=True, slots=True)
+class CorrelationScatterPanel:
+    window_size: int
+    population: str
+    source_count: int
+    seed: int
+    sample_indices: tuple[int, ...]
+    target: tuple[float, ...]
+    predictions: tuple[ScatterPredictionSeries, ...]
+
+    def __post_init__(self) -> None:
+        if self.window_size <= 0 or self.source_count <= 0:
+            raise ValueError("scatter window and source count must be positive")
+        if self.population not in _SCATTER_POPULATIONS:
+            raise ValueError(f"unknown scatter population: {self.population!r}")
+        if (
+            not self.sample_indices
+            or tuple(sorted(set(self.sample_indices))) != self.sample_indices
+            or self.sample_indices[0] < 0
+            or self.sample_indices[-1] >= self.source_count
+        ):
+            raise ValueError("scatter indices must be non-empty, unique, increasing, and in range")
+        if len(self.target) != len(self.sample_indices) or any(
+            not math.isfinite(value) or not -1.0 <= value <= 1.0 for value in self.target
+        ):
+            raise ValueError("scatter targets must be aligned finite correlations in [-1,1]")
+        expected_models = _AGE_SCATTER_MODELS if self.population == "age" else _PAIR_SCATTER_MODELS
+        observed_models = tuple(series.model for series in self.predictions)
+        if (
+            len(set(observed_models)) != len(observed_models)
+            or set(observed_models) != expected_models
+            or any(len(series.values) != len(self.target) for series in self.predictions)
+        ):
+            raise ValueError("scatter prediction series differ from the required aligned models")
+
+
+@dataclass(frozen=True, slots=True)
+class LatentTsnePoint:
+    probe_id: ProbeId
+    chromosome: Autosome
+    position: OneBasedPosition
+    context: GenomicContext
+    x: float
+    y: float
+
+    def __post_init__(self) -> None:
+        _finite(self.x, "t-SNE x")
+        _finite(self.y, "t-SNE y")
+
+
+@dataclass(frozen=True, slots=True)
+class LatentTsnePanel:
+    window_size: int
+    latent_dimension: int
+    lambda_age: float
+    source_count: int
+    count_per_context: int
+    perplexity: float
+    final_kl_divergence: float
+    points: tuple[LatentTsnePoint, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            self.window_size <= 0
+            or self.latent_dimension <= 0
+            or self.lambda_age <= 0.0
+            or self.source_count < len(self.points)
+            or self.count_per_context <= 0
+            or self.perplexity <= 0.0
+            or self.perplexity >= len(self.points)
+        ):
+            raise ValueError("t-SNE dimensions, counts, and perplexity are inconsistent")
+        _finite(self.lambda_age, "t-SNE lambda")
+        _finite(self.perplexity, "t-SNE perplexity")
+        _finite(self.final_kl_divergence, "t-SNE KL divergence")
+        if self.final_kl_divergence < 0.0:
+            raise ValueError("t-SNE KL divergence must be non-negative")
+        expected_count = self.count_per_context * len(GenomicContext)
+        if len(self.points) != expected_count:
+            raise ValueError("t-SNE points must have the declared balanced context count")
+        contexts = tuple(point.context for point in self.points)
+        if any(contexts.count(context) != self.count_per_context for context in GenomicContext):
+            raise ValueError("t-SNE points must be exactly balanced across genomic contexts")
+        probe_ids = tuple(point.probe_id for point in self.points)
+        if len(set(probe_ids)) != len(probe_ids):
+            raise ValueError("t-SNE panel contains duplicate probe IDs")
+
+
+@dataclass(frozen=True, slots=True)
 class InterimSiteData:
     schema: str
     protocol_id: str
@@ -146,6 +276,9 @@ class InterimSiteData:
     primary_window_sweep: tuple[WindowSweepPoint, ...]
     primary_distance_metrics: tuple[DistanceMetricPoint, ...]
     primary_age_metrics: tuple[AgeMetricPoint, ...]
+    exploratory_age_metrics: tuple[ExploratoryAgeMetricPoint, ...]
+    scatter_panels: tuple[CorrelationScatterPanel, ...]
+    latent_tsne_panels: tuple[LatentTsnePanel, ...]
     exploratory_uniform_metrics: tuple[ExploratoryMetricPoint, ...]
     exploratory_distance_metrics: tuple[ExploratoryMetricPoint, ...]
     kernel_weights: tuple[KernelWeightPoint, ...]
@@ -179,6 +312,9 @@ class InterimSiteData:
             self.primary_window_sweep,
             self.primary_distance_metrics,
             self.primary_age_metrics,
+            self.exploratory_age_metrics,
+            self.scatter_panels,
+            self.latent_tsne_panels,
             self.exploratory_uniform_metrics,
             self.exploratory_distance_metrics,
             self.kernel_weights,
@@ -202,6 +338,43 @@ class InterimSiteData:
             (window, stage) for window in windows for stage in _AGE_STAGES
         }:
             raise ValueError("primary interim age results must cover every stage once")
+        exploratory_age_keys = tuple(point.window_size for point in self.exploratory_age_metrics)
+        if (
+            len(set(exploratory_age_keys)) != len(exploratory_age_keys)
+            or set(exploratory_age_keys) != windows
+        ):
+            raise ValueError("direct tanh age metrics must cover every completed window once")
+        scatter_keys = tuple((point.window_size, point.population) for point in self.scatter_panels)
+        expected_scatter = {
+            (window, population) for window in windows for population in _SCATTER_POPULATIONS
+        }
+        if len(set(scatter_keys)) != len(scatter_keys) or set(scatter_keys) != expected_scatter:
+            raise ValueError("scatter panels must cover age and both pair populations")
+        projection_dimensions = tuple(
+            dimension for dimension in self.latent_dimensions if dimension <= 128
+        )
+        tsne_keys = tuple(
+            (point.window_size, point.latent_dimension, point.lambda_age)
+            for point in self.latent_tsne_panels
+        )
+        expected_tsne = {
+            (window, dimension, 0.1) for window in windows for dimension in projection_dimensions
+        }
+        if len(set(tsne_keys)) != len(tsne_keys) or set(tsne_keys) != expected_tsne:
+            raise ValueError("t-SNE panels must cover every dimension through 128 at lambda 0.1")
+        point_identity = tuple(
+            (point.probe_id, point.chromosome, point.position, point.context)
+            for point in self.latent_tsne_panels[0].points
+        )
+        if any(
+            tuple(
+                (point.probe_id, point.chromosome, point.position, point.context)
+                for point in panel.points
+            )
+            != point_identity
+            for panel in self.latent_tsne_panels[1:]
+        ):
+            raise ValueError("every t-SNE panel must use the same ordered validation loci")
         tuning_keys = tuple(
             (point.window_size, point.latent_dimension, point.lambda_age)
             for point in self.tuning_sweep

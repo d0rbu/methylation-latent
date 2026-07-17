@@ -20,12 +20,16 @@ partial age stages, missing pair populations, identity drift, or an incomplete p
 
 Do not weaken the primary compiler to publish partial runs. The separate interim compiler requires
 an increasing strict subset of the four planned windows and writes
-`methylation-latent.interim-site-data.v1`. It displays:
+`methylation-latent.interim-site-data.v2`. It displays:
 
 - every full-model `d × lambda` candidate using nested-validation metrics only;
 - frozen-test metrics only for the already validation-selected models;
 - the preregistered age and distance-stratified panels for completed windows;
 - post-hoc PSD distance integration under an explicit non-confirmatory label;
+- the post-hoc corrected direct scalar tanh age baseline;
+- target-blind display samples of predicted versus empirical age and pair correlations;
+- exact Torch t-SNE of the same context-balanced nested-validation loci for
+  `d = 16, 32, 64, 128` at `lambda = 0.1`;
 - an explicit pending state, rather than a substitute, for the 16-kb latent projection.
 
 ```bash
@@ -33,18 +37,24 @@ uv run python scripts/compile_interim_results_site.py \
   --config configs/protocol-v2.toml \
   --data "$RUN_ROOT/data" \
   --experiments "$RUN_ROOT/experiments" \
+  --embeddings "$RUN_ROOT/embeddings" \
   --distance-integration "$RUN_ROOT/exploratory/distance-integration-v2" \
-  --results-output "$RUN_ROOT/interim-site-data-v1" \
+  --direct-age "$RUN_ROOT/exploratory/direct-tanh-age-v1" \
+  --prediction-scatter "$RUN_ROOT/exploratory/prediction-scatter-v1" \
+  --latent-tsne "$RUN_ROOT/exploratory/validation-latent-tsne-v1" \
+  --results-output "$RUN_ROOT/interim-site-data-v2" \
   --site-template interim-site-template \
   --root-template interim-site-root-template \
-  --site-output "$RUN_ROOT/interim-site-v1" \
+  --site-output "$RUN_ROOT/interim-site-v2" \
   --windows 1024 4096
 ```
 
 Both output directories must be absent. The compiler verifies the sealed data and split identity,
 all candidate hashes, the selected configuration, primary sequence-metric reproduction within an
-explicit eight-ULP bound, and the deterministic exploratory runtime contract before writing any
-split page. The ULP allowance covers independently ordered float64 reductions; counts remain exact.
+explicit eight-ULP bound, direct-age/scatter source hashes, the complete t-SNE grid and its
+validation-only sampling contract, and the deterministic exploratory runtime contract before
+writing any split page. The ULP allowance covers independently ordered float64 reductions; counts
+remain exact.
 
 ## Compile
 

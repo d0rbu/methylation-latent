@@ -5,6 +5,13 @@ const colors = {
   registered_distance_class: "#6d756f",
   psd_distance: "#b78105",
   psd_distance_plus_sequence: "#7a4da3",
+  cosine_age_only: "#4977a3",
+  direct_tanh: "#c43f52",
+  full_latent_metric: "#7a4da3",
+  island: "#006b57",
+  shore: "#4977a3",
+  shelf: "#b78105",
+  open_sea: "#c43f52",
 };
 
 const distanceOrder = [
@@ -32,6 +39,17 @@ const modelLabels = {
   registered_distance_class: "Registered distance-class mean",
   psd_distance: "PSD distance only",
   psd_distance_plus_sequence: "PSD distance + sequence",
+};
+const scatterModelLabels = {
+  cosine_age_only: "Caduceus age-only cosine",
+  direct_tanh: "Direct scalar tanh (post-hoc)",
+  full_latent_metric: "Full latent metric",
+};
+const contextLabels = {
+  island: "island",
+  shore: "shore",
+  shelf: "shelf",
+  open_sea: "open sea",
 };
 
 const svgElement = (name, attributes = {}, text = null) => {
@@ -136,6 +154,201 @@ const article = title => {
   heading.textContent = title;
   element.append(heading);
   return element;
+};
+
+const canvasFrame = (label, size = 420) => {
+  const canvas = document.createElement("canvas");
+  const ratio = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = size * ratio;
+  canvas.height = size * ratio;
+  canvas.style.width = `${size}px`;
+  canvas.style.height = `${size}px`;
+  canvas.setAttribute("role", "img");
+  canvas.setAttribute("aria-label", label);
+  const context = canvas.getContext("2d");
+  context.scale(ratio, ratio);
+  return [canvas, context, size];
+};
+
+const plotFigure = title => {
+  const figure = document.createElement("figure");
+  const heading = document.createElement("figcaption");
+  heading.className = "plot-title";
+  heading.textContent = title;
+  figure.append(heading);
+  return figure;
+};
+
+const plotNote = text => {
+  const note = document.createElement("p");
+  note.className = "plot-note";
+  note.textContent = text;
+  return note;
+};
+
+const drawCorrelationCanvas = (target, prediction, color, label) => {
+  if (target.length !== prediction.length || !target.length) throw new Error(`${label} scatter vectors differ`);
+  const [canvas, context, size] = canvasFrame(label);
+  const left = 48;
+  const right = size - 16;
+  const top = 16;
+  const bottom = size - 48;
+  const coordinateX = value => left + (right - left) * (value + 1) / 2;
+  const coordinateY = value => bottom - (bottom - top) * (value + 1) / 2;
+  context.fillStyle = "#fffdf8";
+  context.fillRect(0, 0, size, size);
+  context.strokeStyle = "#d7d5ca";
+  context.lineWidth = 1;
+  [-1, -0.5, 0, 0.5, 1].forEach(value => {
+    const x = coordinateX(value);
+    const y = coordinateY(value);
+    context.beginPath();
+    context.moveTo(x, top);
+    context.lineTo(x, bottom);
+    context.moveTo(left, y);
+    context.lineTo(right, y);
+    context.stroke();
+    context.fillStyle = "#5d6c65";
+    context.font = "11px ui-sans-serif, system-ui, sans-serif";
+    context.textAlign = "center";
+    context.fillText(value.toFixed(1), x, bottom + 17);
+    context.textAlign = "right";
+    context.fillText(value.toFixed(1), left - 7, y + 4);
+  });
+  context.strokeStyle = "#6d756f";
+  context.setLineDash([6, 5]);
+  context.beginPath();
+  context.moveTo(coordinateX(-1), coordinateY(-1));
+  context.lineTo(coordinateX(1), coordinateY(1));
+  context.stroke();
+  context.setLineDash([]);
+  context.globalAlpha = 0.24;
+  context.fillStyle = color;
+  target.forEach((value, index) => {
+    const x = coordinateX(value);
+    const y = coordinateY(prediction[index]);
+    context.fillRect(x - 1.15, y - 1.15, 2.3, 2.3);
+  });
+  context.globalAlpha = 1;
+  context.strokeStyle = "#7e8983";
+  context.strokeRect(left, top, right - left, bottom - top);
+  context.fillStyle = "#5d6c65";
+  context.font = "12px ui-sans-serif, system-ui, sans-serif";
+  context.textAlign = "center";
+  context.fillText("empirical correlation", (left + right) / 2, size - 9);
+  context.save();
+  context.translate(13, (top + bottom) / 2);
+  context.rotate(-Math.PI / 2);
+  context.fillText("predicted correlation", 0, 0);
+  context.restore();
+  return canvas;
+};
+
+const drawDirectAge = rows => {
+  document.querySelector("#direct-age-metrics").append(table(
+    ["Model", "Window", "held-out probes", "selected step", "validation MSE", "test MSE", "test Pearson", "test R²"],
+    [...rows].sort((a, b) => a.window_size - b.window_size).map(row => [
+      "Direct scalar tanh (post-hoc)",
+      windowLabel(row.window_size),
+      row.count.toLocaleString(),
+      row.selected_step,
+      metric(row.validation_mse, 6),
+      metric(row.mse, 6),
+      metric(row.pearson),
+      metric(row.r_squared),
+    ]),
+  ));
+};
+
+const drawAgeScatter = panels => {
+  const node = document.querySelector("#age-scatter");
+  panels.filter(panel => panel.population === "age")
+    .sort((a, b) => a.window_size - b.window_size)
+    .forEach(panel => {
+      const card = article(`${windowLabel(panel.window_size)} · ${panel.target.length.toLocaleString()} of ${panel.source_count.toLocaleString()} held-out probes shown`);
+      const grid = document.createElement("div");
+      grid.className = "plot-grid";
+      ["cosine_age_only", "direct_tanh", "full_latent_metric"].forEach(model => {
+        const series = panel.predictions.find(candidate => candidate.model === model);
+        if (!series) throw new Error(`missing age scatter series ${model}`);
+        const figure = plotFigure(scatterModelLabels[model]);
+        figure.append(drawCorrelationCanvas(panel.target, series.values, colors[model], `${windowLabel(panel.window_size)} ${scatterModelLabels[model]} predicted versus empirical age correlation`));
+        grid.append(figure);
+      });
+      card.append(grid, plotNote("Dashed diagonal: perfect prediction. Axes fixed to [−1, 1]."));
+      node.append(card);
+    });
+};
+
+const drawPairScatter = (panels, primaryRows) => {
+  const node = document.querySelector("#pair-scatter");
+  panels.filter(panel => panel.population !== "age")
+    .sort((a, b) => a.window_size - b.window_size || a.population.localeCompare(b.population))
+    .forEach(panel => {
+      const series = panel.predictions.find(candidate => candidate.model === "full_latent_metric");
+      const metrics = primaryRows.find(row => row.window_size === panel.window_size && row.population === panel.population);
+      if (!series || !metrics) throw new Error("pair scatter is missing its prediction series or primary metrics");
+      const card = article(`${windowLabel(panel.window_size)} · ${populationLabels[panel.population]}`);
+      const figure = plotFigure(`${panel.target.length.toLocaleString()} of ${panel.source_count.toLocaleString()} frozen pairs shown`);
+      figure.className = "single-plot";
+      figure.append(drawCorrelationCanvas(panel.target, series.values, colors[panel.population], `${windowLabel(panel.window_size)} ${populationLabels[panel.population]} predicted versus empirical pair correlation`));
+      card.append(
+        figure,
+        plotNote(`Full-cache metrics: MSE ${metric(metrics.mse, 6)} · Pearson ${metric(metrics.pearson)} · R² ${metric(metrics.r_squared)}.`),
+      );
+      node.append(card);
+    });
+};
+
+const drawTsneCanvas = (points, label) => {
+  if (!points.length) throw new Error(`${label} has no t-SNE points`);
+  const [canvas, context, size] = canvasFrame(label, 360);
+  const margin = 18;
+  const xs = points.map(point => point.x);
+  const ys = points.map(point => point.y);
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const yMin = Math.min(...ys);
+  const yMax = Math.max(...ys);
+  if (xMin === xMax || yMin === yMax) throw new Error(`${label} has a collapsed t-SNE axis`);
+  const x = value => margin + (size - 2 * margin) * (value - xMin) / (xMax - xMin);
+  const y = value => size - margin - (size - 2 * margin) * (value - yMin) / (yMax - yMin);
+  context.fillStyle = "#fffdf8";
+  context.fillRect(0, 0, size, size);
+  context.strokeStyle = "#d7d5ca";
+  context.strokeRect(margin, margin, size - 2 * margin, size - 2 * margin);
+  points.forEach(point => {
+    context.beginPath();
+    context.arc(x(point.x), y(point.y), 2.8, 0, 2 * Math.PI);
+    context.fillStyle = colors[point.context];
+    context.globalAlpha = 0.72;
+    context.fill();
+  });
+  context.globalAlpha = 1;
+  return canvas;
+};
+
+const drawLatentTsne = panels => {
+  const node = document.querySelector("#latent-tsne");
+  const windows = [...new Set(panels.map(panel => panel.window_size))].sort((a, b) => a - b);
+  windows.forEach(window => {
+    const card = article(`${windowLabel(window)} · λ = 0.1 · validation loci only`);
+    const grid = document.createElement("div");
+    grid.className = "projection-grid";
+    panels.filter(panel => panel.window_size === window)
+      .sort((a, b) => a.latent_dimension - b.latent_dimension)
+      .forEach(panel => {
+        const figure = plotFigure(`d = ${panel.latent_dimension}`);
+        figure.append(
+          drawTsneCanvas(panel.points, `${windowLabel(window)} d ${panel.latent_dimension} t-SNE colored by genomic context`),
+          plotNote(`n = ${panel.points.length} · perplexity ${panel.perplexity} · final KL ${metric(panel.final_kl_divergence, 4)}`),
+        );
+        grid.append(figure);
+      });
+    card.append(grid);
+    legend(card, Object.entries(contextLabels).map(([key, value]) => [value, colors[key]]));
+    node.append(card);
+  });
 };
 
 const drawTuning = (rows, dimensions, lambdas) => {
@@ -366,10 +579,14 @@ fetch("results.json", { cache: "no-store" })
     }));
     drawTuning(data.tuning_sweep, data.latent_dimensions, data.lambda_age_values);
     drawWindowSweep(data.primary_window_sweep);
+    drawPairScatter(data.scatter_panels, data.primary_window_sweep);
     drawAge(data.primary_age_metrics);
+    drawDirectAge(data.exploratory_age_metrics);
+    drawAgeScatter(data.scatter_panels);
     drawPrimaryDistance(data.primary_distance_metrics);
     drawIntegration(data.exploratory_uniform_metrics, data.kernel_weights);
     drawIntegratedDistance(data.exploratory_distance_metrics, data.primary_distance_metrics);
+    drawLatentTsne(data.latent_tsne_panels);
     const artifacts = document.querySelector("#artifacts");
     data.artifact_ids.forEach(identifier => {
       const item = document.createElement("li");
