@@ -107,15 +107,18 @@ def _metric_json(target: t.Tensor, prediction: t.Tensor) -> dict[str, JsonValue]
     return cast(dict[str, JsonValue], asdict(regression_metrics(target, prediction)))
 
 
-def _baseline_metric_json(target: t.Tensor, prediction: t.Tensor) -> dict[str, JsonValue]:
+def _nullable_pearson_metric_json(
+    target: t.Tensor,
+    prediction: t.Tensor,
+) -> dict[str, JsonValue]:
     if target.dtype != t.float64 or prediction.dtype != t.float64 or target.shape != prediction.shape:
-        raise TypeError("baseline metric vectors must be aligned float64 tensors")
+        raise TypeError("nullable-Pearson metric vectors must be aligned float64 tensors")
     target_centered = target - target.mean()
     prediction_centered = prediction - prediction.mean()
     target_ss = t.sum(t.square(target_centered))
     prediction_ss = t.sum(t.square(prediction_centered))
     if float(target_ss.item()) == 0.0:
-        raise ValueError("baseline target must not be constant")
+        raise ValueError("nullable-Pearson target must not be constant")
     residual_ss = t.sum(t.square(target - prediction))
     pearson: float | None = None
     if float(prediction_ss.item()) != 0.0:
@@ -127,6 +130,10 @@ def _baseline_metric_json(target: t.Tensor, prediction: t.Tensor) -> dict[str, J
         )
     return {
         "count": target.numel(),
+        "target_mean": float(target.mean().item()),
+        "target_standard_deviation": float(target.std(unbiased=False).item()),
+        "prediction_mean": float(prediction.mean().item()),
+        "prediction_standard_deviation": float(prediction.std(unbiased=False).item()),
         "mse": float(t.mean(t.square(target - prediction)).item()),
         "pearson": pearson,
         "pearson_status": "defined" if pearson is not None else "undefined_constant_prediction",
@@ -245,12 +252,15 @@ def _pair_set_report(
     return (
         {
             "sequence": _metric_json(pair_set.targets, sequence),
-            "registered_distance_class": _baseline_metric_json(
+            "registered_distance_class": _nullable_pearson_metric_json(
                 pair_set.targets,
                 registered_prediction,
             ),
-            "psd_distance": _metric_json(pair_set.targets, distance_prediction),
-            "psd_distance_plus_sequence": _metric_json(
+            "psd_distance": _nullable_pearson_metric_json(
+                pair_set.targets,
+                distance_prediction,
+            ),
+            "psd_distance_plus_sequence": _nullable_pearson_metric_json(
                 pair_set.targets,
                 combined_prediction,
             ),
@@ -281,16 +291,6 @@ def _stratified_rows(
         pair_set.targets,
         sequence_prediction,
     )
-    distance_metrics = metrics_by_distance(
-        pair_set.pairs,
-        pair_set.targets,
-        distance_prediction,
-    )
-    combined_metrics = metrics_by_distance(
-        pair_set.pairs,
-        pair_set.targets,
-        combined_prediction,
-    )
     return [
         {
             "distance_class": DISTANCE_CLASS_LABELS[int(distance_class)],
@@ -299,10 +299,13 @@ def _stratified_rows(
                 cache.distance_baseline.means[int(distance_class)].item()
             ),
             "sequence": cast(dict[str, JsonValue], asdict(sequence_metrics[distance_class])),
-            "psd_distance": cast(dict[str, JsonValue], asdict(distance_metrics[distance_class])),
-            "psd_distance_plus_sequence": cast(
-                dict[str, JsonValue],
-                asdict(combined_metrics[distance_class]),
+            "psd_distance": _nullable_pearson_metric_json(
+                pair_set.targets[pair_set.pairs.distance_class == int(distance_class)],
+                distance_prediction[pair_set.pairs.distance_class == int(distance_class)],
+            ),
+            "psd_distance_plus_sequence": _nullable_pearson_metric_json(
+                pair_set.targets[pair_set.pairs.distance_class == int(distance_class)],
+                combined_prediction[pair_set.pairs.distance_class == int(distance_class)],
             ),
         }
         for distance_class in DistanceClass
