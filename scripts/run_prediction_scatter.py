@@ -289,11 +289,11 @@ def main() -> None:
             with t.inference_mode():
                 full_latent = full_model.latent(embedding_values)
                 full_age_all = full_model.predict_age_from_latent(full_latent).to(t.float64)
-                test_embeddings = embedding_values.index_select(0, split.test_indices)
-                age_latent = age_model.latent(test_embeddings)
-                cosine_age = age_model.predict_age_from_latent(age_latent).to(t.float64)
+                age_latent = age_model.latent(embedding_values)
+                cosine_age_all = age_model.predict_age_from_latent(age_latent).to(t.float64)
             age_target = targets.rho.tensor.index_select(0, split.test_indices)
             full_age = full_age_all.index_select(0, split.test_indices)
+            cosine_age = cosine_age_all.index_select(0, split.test_indices)
             primary_age = _object(evaluation, "age_metrics")
             _assert_metrics_within_ulps(
                 _object(primary_age, "caduceus_age_only"), age_target, cosine_age
