@@ -49,6 +49,7 @@ GSE87571 IDATs + phenotype + GPL13534 + masks + hg19
 | `training` | Validation-selected age-only/full tuning and refit |
 | `evaluation` | Pair populations, distance classes/reference, metrics, and PCA |
 | `evaluation_cache` | Immutable pair indices and exact target values |
+| `distance_integration` | Post-hoc PSD distance kernels and simplex-constrained mixtures |
 | `artifacts` / `storage` | Canonical JSON, hashes, and exclusive safetensors |
 | `site` | Strict site-data schema and static HTML generation |
 | `config` / `cli` | Frozen protocol and thin public commands |
@@ -64,12 +65,15 @@ project dependency.
 
 ## Orchestration
 
-The four scripts are deliberately thin:
+The four primary scripts are deliberately thin:
 
 - `prepare_gse87571.py`: build an exclusive primary-data directory;
 - `seal_primary_data.py`: independently validate and close that directory;
 - `run_experiments.py`: execute restart-safe ordered stages;
 - `compile_results_site.py`: transform complete evaluation records into two static sites.
+
+`run_distance_integration.py` is a separately labeled post-hoc analysis. It consumes immutable
+primary artifacts and writes only the exploratory distance-integration schema.
 
 Large artifacts live outside Git. Git contains protocol, code, tests, templates, and compact
 validated result summaries only.

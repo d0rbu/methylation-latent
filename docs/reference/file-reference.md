@@ -8,6 +8,7 @@
 | `scripts/prepare_gse87571.py` | Build primary cohort, targets, features, and splits |
 | `scripts/seal_primary_data.py` | Recompute invariants and seal the 17-file data bundle |
 | `scripts/run_experiments.py` | Ordered sequence/pair/age/full/evaluate stages |
+| `scripts/run_distance_integration.py` | Post-hoc validation-fitted PSD distance integration |
 | `scripts/compile_results_site.py` | Compile validated evaluation records into static sites |
 | `results/` | Compact validated site-data artifacts after experiment completion |
 | `site-template/` | Split-specific result-page HTML, JavaScript, and CSS |
@@ -35,6 +36,7 @@
 | `training.py` | Age-only/full tuning, validation, and refit |
 | `evaluation.py` | Pair sampling, distance reference, metrics, and projection |
 | `evaluation_cache.py` | Immutable pair-index/target artifacts |
+| `distance_integration.py` | PSD distance kernels and exact simplex-constrained mixtures |
 | `artifacts.py` | Canonical JSON and hashing |
 | `storage.py` | Strict safetensors persistence |
 | `site.py` | Site-data validation and static generation |

@@ -9,6 +9,8 @@ GSE87571 IDATs; references to the unavailable GSE40279 primary run are historica
   order, validity conditions, and interpretation limits
 - [`research/literature.md`](research/literature.md) — dated search for direct and neighboring
   prior work
+- [`research/exploratory-distance-integration.md`](research/exploratory-distance-integration.md)
+  — post-hoc PSD distance-plus-sequence kernel analysis and leakage boundary
 
 ## Pipelines
 
