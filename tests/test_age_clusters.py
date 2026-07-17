@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 import pytest
 import torch as t
 
 from methylation_latent.age_clusters import (
+    CategoricalAssociation,
+    ContinuousContrast,
     KMeansTwoConfig,
+    KMeansTwoResult,
+    SubgroupCorrelations,
     adjusted_rand_index,
     categorical_association,
     continuous_contrast,
@@ -51,6 +56,37 @@ def test_kmeans_two_rejects_invalid_geometry(values: t.Tensor, message: str) -> 
         fit_kmeans_two(values, config=_config())
 
 
+def test_kmeans_two_rejects_nonfinite_input_and_nonconvergence() -> None:
+    values = t.tensor(((0.0, 0.0), (1.0, 1.0), (2.0, 3.0), (4.0, 5.0)), dtype=t.float64)
+    invalid = values.clone()
+    invalid[0, 0] = float("nan")
+    with pytest.raises(ValueError, match="finite"):
+        fit_kmeans_two(invalid, config=_config())
+    with pytest.raises(RuntimeError, match="converge"):
+        fit_kmeans_two(values, config=replace(_config(), maximum_iterations=1))
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    (
+        ({"centers": t.ones((2, 3), dtype=t.float64)}, "shape"),
+        ({"inertia": -1.0}, "inertia"),
+        ({"iterations": 0}, "iteration"),
+        ({"centers": t.tensor(((2.0, 0.0), (1.0, 0.0)), dtype=t.float64)}, "ordered"),
+    ),
+)
+def test_kmeans_result_rejects_invalid_state(change: dict[str, object], message: str) -> None:
+    valid = KMeansTwoResult(
+        labels=t.tensor((0, 0, 1, 1), dtype=t.int64),
+        centers=t.tensor(((0.0, 0.0), (1.0, 1.0)), dtype=t.float64),
+        standardized_centers=t.tensor(((-1.0, -1.0), (1.0, 1.0)), dtype=t.float64),
+        inertia=1.0,
+        iterations=2,
+    )
+    with pytest.raises(ValueError, match=message):
+        replace(valid, **change)
+
+
 @pytest.mark.parametrize("change", ({"restarts": 0}, {"maximum_iterations": 0}))
 def test_kmeans_config_rejects_nonpositive_counts(change: dict[str, int]) -> None:
     with pytest.raises(ValueError, match="positive"):
@@ -72,11 +108,64 @@ def test_categorical_and_continuous_cluster_associations_are_exact() -> None:
     assert contrast.standardized_mean_difference == 4.0
 
 
+def test_association_functions_reject_invalid_labels_categories_and_values() -> None:
+    labels = t.tensor((0, 0, 1, 1), dtype=t.int64)
+    with pytest.raises(TypeError, match="labels"):
+        categorical_association(labels.to(t.float64), t.tensor((0, 0, 1, 1)))
+    with pytest.raises(ValueError, match="exactly"):
+        categorical_association(t.zeros(4, dtype=t.int64), t.tensor((0, 0, 1, 1)))
+    with pytest.raises(TypeError, match="categories"):
+        categorical_association(labels, t.tensor((0.0, 0.0, 1.0, 1.0)))
+    with pytest.raises(ValueError, match="align"):
+        categorical_association(labels, t.tensor((0, 0, 1), dtype=t.int64))
+    singleton = categorical_association(labels, t.zeros(4, dtype=t.int64))
+    assert singleton.cramer_v == 0.0
+    with pytest.raises(TypeError, match="float64"):
+        continuous_contrast(labels, t.ones(4, dtype=t.float32))
+    with pytest.raises(ValueError, match="aligned"):
+        continuous_contrast(labels, t.tensor((0.0, 1.0, 2.0), dtype=t.float64))
+    with pytest.raises(ValueError, match="at least two"):
+        continuous_contrast(
+            t.tensor((0, 0, 0, 1), dtype=t.int64),
+            t.arange(4, dtype=t.float64),
+        )
+    with pytest.raises(ValueError, match="constant"):
+        continuous_contrast(labels, t.ones(4, dtype=t.float64))
+
+
+@pytest.mark.parametrize(
+    "constructor",
+    (
+        lambda: CategoricalAssociation(t.tensor(((1, -1), (1, 1))), 0.2),
+        lambda: CategoricalAssociation(t.ones((2, 2), dtype=t.int64), 2.0),
+        lambda: ContinuousContrast((float("nan"), 1.0), (1.0, 1.0), 0.0),
+        lambda: ContinuousContrast((0.0, 1.0), (-1.0, 1.0), 0.0),
+        lambda: SubgroupCorrelations(t.ones(2, dtype=t.float32), 3),
+        lambda: SubgroupCorrelations(t.ones(2, dtype=t.float64), 2),
+        lambda: SubgroupCorrelations(t.tensor((0.0, float("nan"))), 3),
+    ),
+)
+def test_analysis_result_types_reject_invalid_state(constructor: Callable[[], object]) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        constructor()
+
+
 def test_partition_agreement_is_invariant_to_binary_label_permutation() -> None:
     first = t.tensor((0, 0, 1, 1, 1, 0), dtype=t.int64)
     second = 1 - first
     assert permutation_invariant_label_agreement(first, second) == 1.0
     assert adjusted_rand_index(first, second) == 1.0
+
+
+def test_partition_agreement_rejects_misaligned_or_degenerate_labels() -> None:
+    first = t.tensor((0, 0, 1, 1), dtype=t.int64)
+    with pytest.raises(ValueError, match="align"):
+        permutation_invariant_label_agreement(first, t.tensor((0, 1), dtype=t.int64))
+    with pytest.raises(ValueError, match="undefined"):
+        adjusted_rand_index(
+            t.tensor((0, 1), dtype=t.int64),
+            t.tensor((0, 1), dtype=t.int64),
+        )
 
 
 def test_subgroup_age_correlations_restandardize_both_axes() -> None:
@@ -111,3 +200,25 @@ def test_subgroup_age_correlations_reject_constant_probe_in_subgroup() -> None:
     mask = t.tensor((True, True, True, False))
     with pytest.raises(ValueError, match="constant methylation"):
         subgroup_age_correlations(methylation, age, mask)
+
+
+def test_subgroup_age_correlations_reject_invalid_axes_and_constant_age() -> None:
+    methylation = t.tensor(((0.0, 1.0, 2.0, 3.0),), dtype=t.float64)
+    age = t.tensor((-1.0, -0.5, 0.5, 1.0), dtype=t.float64)
+    mask = t.ones(4, dtype=t.bool)
+    with pytest.raises(TypeError, match="standardized age"):
+        subgroup_age_correlations(methylation, age.to(t.float32), mask)
+    with pytest.raises(TypeError, match="subgroup mask"):
+        subgroup_age_correlations(methylation, age, mask.to(t.int64))
+    with pytest.raises(ValueError, match="three"):
+        subgroup_age_correlations(
+            methylation,
+            age,
+            t.tensor((True, True, False, False)),
+        )
+    with pytest.raises(ValueError, match="age is constant"):
+        subgroup_age_correlations(
+            methylation,
+            t.ones(4, dtype=t.float64),
+            mask,
+        )
