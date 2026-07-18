@@ -217,6 +217,7 @@ def _load_gene_loci(
         expected = {
             "assembly_name",
             "biotype",
+            "canonical_transcript",
             "db_type",
             "description",
             "display_name",
@@ -238,6 +239,8 @@ def _load_gene_loci(
             or raw["biotype"] != "protein_coding"
             or raw["object_type"] != "Gene"
             or raw["display_name"] != gene
+            or not isinstance(raw["canonical_transcript"], str)
+            or not raw["canonical_transcript"].startswith("ENST")
         ):
             raise ValueError(f"Ensembl lookup identity differs: {gene}")
         loci.append(
