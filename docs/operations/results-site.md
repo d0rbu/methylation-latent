@@ -84,6 +84,56 @@ The compiler requires all 20 records (two split families, two windows, five repr
 copies the validated base site, adds `protein-extension.html`, and links it from the existing
 landing page. It never edits an existing site directory in place.
 
+### Add the post-hoc dual-probe report
+
+Run the frozen alpha sweep and selected-only evaluation as separate commands. The second command
+cannot reconstruct selection from test metrics: it revalidates every tuning record and the
+already-published validation-only selection before it may refit or read test targets.
+
+```bash
+uv run python scripts/run_dual_probe_latent.py \
+  --config configs/dual-probe-latent-v1.toml \
+  --parent-config configs/protocol-v2.toml \
+  --data "$RUN_ROOT/data" \
+  --embeddings "$RUN_ROOT/embeddings" \
+  --experiments "$RUN_ROOT/experiments" \
+  --output "$RUN_ROOT/exploratory/dual-probe-latent-v1" \
+  --phase tune --device cuda \
+  --splits diverse-blocks held-out-chromosome \
+  --windows 1024 4096
+
+uv run python scripts/run_dual_probe_latent.py \
+  --config configs/dual-probe-latent-v1.toml \
+  --parent-config configs/protocol-v2.toml \
+  --data "$RUN_ROOT/data" \
+  --embeddings "$RUN_ROOT/embeddings" \
+  --experiments "$RUN_ROOT/experiments" \
+  --output "$RUN_ROOT/exploratory/dual-probe-latent-v1" \
+  --phase evaluate --device cuda \
+  --splits diverse-blocks held-out-chromosome \
+  --windows 1024 4096
+```
+
+Compile a new exclusive site directory from the currently validated site. This copies rather than
+mutates the base site and adds the alpha sweep, selected-only pair and age results, target-blind
+scatterplots, distance-reference curves, and initialization/alignment audits:
+
+```bash
+uv run python scripts/compile_dual_probe_report.py \
+  --config configs/dual-probe-latent-v1.toml \
+  --parent-config configs/protocol-v2.toml \
+  --data "$RUN_ROOT/data" \
+  --dual-results "$RUN_ROOT/exploratory/dual-probe-latent-v1" \
+  --base-site "$RUN_ROOT/interim-site-v7" \
+  --template dual-probe-site-template \
+  --output "$RUN_ROOT/interim-site-v8"
+```
+
+The compiler hashes all four result records, all 84 tuning records, all 12 selected refit metadata
+and model payloads, the frozen data bundle, and the dual protocol. It rejects any unselected test
+record, learned validation/test row, incomplete seed/candidate axis, or display sample not marked
+as target-blind.
+
 ## Compile
 
 ```bash

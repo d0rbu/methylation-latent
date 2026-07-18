@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Methylation Latent · Dual probe latents</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="dual-probe.css">
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">Learned probe geometry ↔ sequence geometry</p>
+      <h1>Dual probe latent experiment</h1>
+      <p id="status" class="status">Loading the immutable selected-only experiment artifact…</p>
+      <div class="metadata">
+        <span id="protocol"></span>
+        <span class="badge">POST-HOC · HYPOTHESIS-GENERATING</span>
+      </div>
+      <nav aria-label="Report navigation"><a href="index.html">Main methylation report</a></nav>
+    </header>
+    <main>
+      <section class="warning">
+        <h2>Interpretation boundary</h2>
+        <p>Alpha and checkpoint were selected only on nested validation, then exactly one strategy
+          was evaluated on each viewed test split. The learned table has no validation or test rows.
+          “Hybrid” metrics use learned vectors for known probes and sequence vectors for new probes;
+          they are not evidence for new × new generalization.</p>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Result summary</p>
+        <h2>Bottom line: the free probe table did not teach a generalizable sequence metric</h2>
+        <div id="findings" class="finding-list"></div>
+        <div id="headline" class="summary-grid"></div>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Validation-only model selection</p>
+        <h2>Alpha and schedule sweep</h2>
+        <label>Split/window <select id="alpha-cell"></select></label>
+        <canvas id="alpha-chart" width="980" height="560"
+          aria-label="Validation score by alpha strategy"></canvas>
+        <div id="alpha-details" class="metric-strip"></div>
+        <p>The plotted score is the mean across three seeds of each seed’s minimum sequence-only
+          validation pair MSE + age MSE. Test targets did not choose alpha, schedule, or step.</p>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Selected-only test evaluation</p>
+        <h2>Generalization against the parent sequence metric</h2>
+        <div class="table-wrap"><table id="metrics-table"></table></div>
+        <p class="note">Lower MSE can coexist with worse predictive correlation when predictions
+          shrink toward zero. Pearson, MSE, and the distance-only reference are therefore shown
+          together; no single pooled number is treated as sufficient.</p>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Predicted versus empirical</p>
+        <h2>Pair-correlation scatter</h2>
+        <div class="controls">
+          <label>Split/window <select id="pair-cell"></select></label>
+          <label>Population <select id="pair-population"></select></label>
+          <label>Representation <select id="pair-mode"></select></label>
+        </div>
+        <canvas id="pair-scatter" width="900" height="650"
+          aria-label="Predicted versus empirical probe-pair correlations"></canvas>
+        <div id="pair-scatter-metrics" class="metric-strip"></div>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Held-out age association</p>
+        <h2>Predicted versus empirical probe–age correlation</h2>
+        <div class="controls">
+          <label>Split/window <select id="age-cell"></select></label>
+          <label>Color <select id="age-color"></select></label>
+        </div>
+        <canvas id="age-scatter" width="900" height="650"
+          aria-label="Predicted versus empirical probe-age correlations"></canvas>
+        <div id="age-scatter-metrics" class="metric-strip"></div>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Distance-stratified evaluation</p>
+        <h2>Distance alone remains the stronger calibrated reference</h2>
+        <div class="controls">
+          <label>Split/window <select id="distance-cell"></select></label>
+          <label>Population <select id="distance-population"></select></label>
+        </div>
+        <canvas id="distance-chart" width="980" height="600"
+          aria-label="Distance-binned target and prediction means"></canvas>
+        <div id="distance-table" class="table-wrap"></div>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Initialization and coupling audit</p>
+        <h2>The two geometries stayed weakly aligned</h2>
+        <div class="table-wrap"><table id="audit-table"></table></div>
+        <details>
+          <summary>Exact objective and endpoint semantics</summary>
+          <pre>L_geometry = mean((u uᵀ - Y)²) + λ mean((u a - ρ)²)
+L_catch    = α mean(1 - cos(u, stopgrad(z)))
+           + (1 - α) mean(1 - cos(stopgrad(u), z))
+L          = L_geometry + 0.1 L_catch</pre>
+          <p><code>α=1</code> freezes the sequence map after least-squares initialization while the
+            learned vectors move toward it. <code>α=0</code> routes catch pressure only into the
+            sequence map while empirical geometry continues to update the learned table.</p>
+        </details>
+      </section>
+      <section>
+        <h2>Provenance</h2>
+        <ul id="provenance"></ul>
+      </section>
+    </main>
+    <script src="dual-probe.js"></script>
+  </body>
+</html>

@@ -23,6 +23,7 @@
 | `scripts/compile_protein_extension_report.py` | Add the immutable protein experiment page to an existing compiled interim site |
 | `scripts/run_dual_probe_latent.py` | Tune, select, refit, and evaluate the dual-probe latent experiment without test-driven alpha selection |
 | `scripts/compile_dual_probe_report.py` | Add the selected-only dual-probe results page to an existing compiled interim site |
+| `dual-probe-site-template/` | Static dual-probe alpha, generalization, scatter, distance, and audit report assets |
 | `scripts/compile_results_site.py` | Compile validated evaluation records into static sites |
 | `results/` | Compact validated site-data artifacts after experiment completion |
 | `site-template/` | Split-specific result-page HTML, JavaScript, and CSS |

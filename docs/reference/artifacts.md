@@ -53,6 +53,7 @@ A finalized cache cannot accept another shard.
 | `dual-probe-refit.v1` | selected-strategy complete-train learned table, sequence map, age direction, global learned-row indices, and exact payload hashes |
 | `dual-probe-results.v1` | selected-only three-seed test evaluation with fully inductive and hybrid pair populations, age metrics, distance strata, and parent comparisons |
 | `dual-probe-manifest.v1` | hashes the four completed split/window result records for report compilation |
+| `dual-probe-site-data.v1` | validated report bundle with all selection/tuning histories, selected-only results, and display-probe annotations |
 
 ## Identity rules
 
