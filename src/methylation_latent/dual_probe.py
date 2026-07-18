@@ -620,9 +620,9 @@ def _exact_sequence_validation(
         values = embeddings.training_tensor(device=device)
         target = pair_target.tensor
         rho = age_target.tensor
-        if target.device != device or rho.device != device:
-            raise ValueError("precomputed dual validation targets are on the wrong device")
         latent = model.sequence(values)
+        if target.device != latent.device or rho.device != latent.device:
+            raise ValueError("precomputed dual validation targets are on the wrong device")
         age_mse_tensor = t.mean(t.square(model.age(latent) - rho))
         squared_error_sum = t.zeros((), dtype=t.float64, device=device)
         for start in range(0, latent.shape[0], pair_chunk_size):
