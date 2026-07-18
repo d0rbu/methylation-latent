@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Methylation Latent · Learned geometry audit</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="latent-interpretation.css">
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">What did the sequence metric learn?</p>
+      <h1>Learned geometry audit</h1>
+      <p id="status" class="status">Loading the immutable interpretation artifact…</p>
+      <div class="metadata">
+        <span id="protocol"></span>
+        <span class="badge">POST-HOC · HYPOTHESIS-GENERATING</span>
+      </div>
+      <nav aria-label="Report navigation"><a href="index.html">Main methylation report</a></nav>
+    </header>
+    <main>
+      <section class="warning">
+        <h2>Interpretation boundary</h2>
+        <p>These analyses were designed after the 1 kb and 4 kb test results were viewed. They do
+          not retrain a model, alter a split, or claim independent biological replication. Candidate
+          loci are generated from predictions before empirical values are revealed, but remain
+          discovery material from one whole-blood cohort.</p>
+      </section>
+
+      <section>
+        <p class="section-label exploratory-label">Bottom line</p>
+        <h2>A reproducible coarse geometry, not a precise covariance map</h2>
+        <div id="findings" class="finding-list"></div>
+        <div id="headline" class="summary-grid"></div>
+      </section>
+
+      <section>
+        <p class="section-label exploratory-label">Is target noise the bottleneck?</p>
+        <h2>Split-half targets are much more reliable than model predictions</h2>
+        <canvas id="reliability-chart" width="980" height="560"
+          aria-label="Split-half reliability for age and pair targets"></canvas>
+        <div class="table-wrap"><table id="reliability-table"></table></div>
+        <p class="note">Each point is the mean across 16 deterministic, age-matched 353-person
+          half splits. Spearman–Brown is a descriptive full-cohort estimate. Pair entries share
+          probes, so they are not independent replicates.</p>
+      </section>
+
+      <section>
+        <p class="section-label exploratory-label">Exact pair decomposition</p>
+        <h2>Age is easier, but does not explain away the pair signal</h2>
+        <div class="controls">
+          <label>Split/window <select id="decomposition-cell"></select></label>
+          <label>Population <select id="decomposition-population"></select></label>
+        </div>
+        <div id="decomposition-headline" class="metric-strip"></div>
+        <canvas id="decomposition-chart" width="980" height="590"
+          aria-label="Pair prediction correlations by distance and component"></canvas>
+        <div class="table-wrap"><table id="decomposition-table"></table></div>
+        <details>
+          <summary>Exact identities used</summary>
+          <pre>Yᵢⱼ = ρᵢρⱼ + (Xᵢ - ρᵢA) · (Xⱼ - ρⱼA)
+Ŷᵢⱼ = ŝᵢŝⱼ + (zᵢ - ŝᵢa) · (zⱼ - ŝⱼa)</pre>
+          <p>Both reconstructions are asserted numerically. Seen × held-out and held-out ×
+            held-out populations are never pooled.</p>
+        </details>
+      </section>
+
+      <section>
+        <p class="section-label exploratory-label">Predicted versus empirical</p>
+        <h2>Inspect the residual pair signal directly</h2>
+        <div class="controls">
+          <label>Split <select id="pair-split"></select></label>
+          <label>Population <select id="pair-population"></select></label>
+          <label>Component <select id="pair-component"></select></label>
+          <label>Window <select id="pair-window"></select></label>
+        </div>
+        <canvas id="pair-scatter" width="900" height="650"
+          aria-label="Predicted versus empirical decomposed pair correlations"></canvas>
+        <div id="pair-scatter-metrics" class="metric-strip"></div>
+      </section>
+
+      <section>
+        <p class="section-label exploratory-label">Age output audit</p>
+        <h2>Broad locus classes explain much of the model output</h2>
+        <div class="controls">
+          <label>Split/window <select id="age-cell"></select></label>
+          <label>Color <select id="age-color"></select></label>
+        </div>
+        <canvas id="age-scatter" width="900" height="650"
+          aria-label="Predicted versus empirical probe-age correlations"></canvas>
+        <div id="age-scatter-metrics" class="metric-strip"></div>
+        <div class="table-wrap"><table id="surrogate-table"></table></div>
+        <p class="note">Surrogates are ordinary least squares fits trained only on registered
+          primary-training probes and evaluated on held-out probes. They are diagnostics of what
+          the frozen model emits, not additional neural baselines.</p>
+      </section>
+
+      <section>
+        <p class="section-label exploratory-label">Rotation-invariant geometry</p>
+        <h2>The apparent high-dimensional model uses about 24 latent directions</h2>
+        <div class="table-wrap"><table id="geometry-table"></table></div>
+        <h3>1 kb versus 4 kb stability</h3>
+        <div class="table-wrap"><table id="stability-table"></table></div>
+        <p>Rows of <code>W</code> and named latent axes are not identifiable. The report therefore
+          uses <code>M = WᵀW</code>, pulled-back age directions, CKA, spectra, predictions, and
+          nearest-neighbour overlap only.</p>
+      </section>
+
+      <section>
+        <p class="section-label exploratory-label">Prediction-only ranking audit</p>
+        <h2>Direction enriches; magnitude does not rank cleanly</h2>
+        <div class="controls">
+          <label>Split <select id="rank-split"></select></label>
+          <label>Target <select id="rank-target"></select></label>
+          <label>Direction <select id="rank-direction"></select></label>
+        </div>
+        <canvas id="rank-chart" width="980" height="560"
+          aria-label="Candidate sign precision by rank"></canvas>
+        <div class="table-wrap"><table id="rank-table"></table></div>
+      </section>
+
+      <section>
+        <p class="section-label exploratory-label">Discovery table</p>
+        <h2>Stable 1 kb/4 kb candidates, with outcomes revealed after ranking</h2>
+        <div class="controls">
+          <label>Split <select id="candidate-split"></select></label>
+          <label>Target <select id="candidate-target"></select></label>
+          <label>Direction <select id="candidate-direction"></select></label>
+        </div>
+        <div id="candidate-note" class="note"></div>
+        <div id="candidate-table" class="table-wrap"></div>
+      </section>
+
+      <section>
+        <h2>What this suggests next</h2>
+        <ol>
+          <li>Use the 16 kb and 64 kb runs to test whether residual pair prediction, not just total
+            prediction, improves beyond the stable 1–4 kb geometry.</li>
+          <li>In a future preregistered cohort, residualize cell composition and assay covariates
+            before treating candidate genes or pairs as aging biology.</li>
+          <li>Compare against a context-aware residual target or adversarial nuisance control: the
+            present model spends much of its capacity on CpG context, GC, and probe chemistry.</li>
+          <li>Use candidate sign as a screening hypothesis only. Do not use predicted cosine as a
+            quantitative estimate of biological covariance.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Provenance</h2>
+        <ul id="provenance"></ul>
+      </section>
+    </main>
+    <script src="latent-interpretation.js"></script>
+  </body>
+</html>

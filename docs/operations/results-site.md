@@ -134,6 +134,29 @@ and model payloads, the frozen data bundle, and the dual protocol. It rejects an
 record, learned validation/test row, incomplete seed/candidate axis, or display sample not marked
 as target-blind.
 
+### Add the post-hoc latent-interpretation report
+
+The CPU-only analysis of the already fitted 1 kb and 4 kb models is compiled as another linked
+page. Start from the immutable site containing the dual-probe report and write a new exclusive
+directory:
+
+```bash
+uv run python scripts/compile_latent_interpretation_report.py \
+  --config configs/latent-interpretation-v1.toml \
+  --results "$RUN_ROOT/exploratory/latent-interpretation-v1" \
+  --base-site "$RUN_ROOT/interim-site-v8" \
+  --template latent-interpretation-site-template \
+  --output "$RUN_ROOT/interim-site-v9"
+```
+
+The compiler verifies the analysis-manifest hash, frozen config and parent identities, complete
+four-cell grid, all 16 reliability replicates, both pair populations and their separate
+age/residual decompositions, display axes, prediction-only candidate tables, exact manifest join,
+CPU-only execution, and the no-parameter-change audit before copying any bytes. The report includes
+split-half target reliability, distance-stratified pair decomposition, scatterplots, model-output
+surrogates, rotation-invariant spectra and stability, rank precision, and candidate tables. It does
+not mutate the existing site or open another tunnel.
+
 ## Compile
 
 ```bash
