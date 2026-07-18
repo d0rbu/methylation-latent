@@ -326,6 +326,7 @@ def _tuning_identity(
     split: SplitArtifact,
     schedule: AlphaSchedule,
     seed: int,
+    device: str,
 ) -> dict[str, JsonValue]:
     return {
         "code_git_commit": code_git_commit,
@@ -346,6 +347,7 @@ def _tuning_identity(
         "validation_indices_sha256": _index_sha256(split.validation_indices),
         "alpha_strategy": schedule.name,
         "seed": seed,
+        "runtime_device": device,
     }
 
 
@@ -387,6 +389,7 @@ def _tuning_record(
 def _validate_tuning_record(
     record: dict[str, object],
     expected_identity: dict[str, JsonValue],
+    expected_training: dict[str, JsonValue],
 ) -> None:
     expected_keys = {
         "schema",
@@ -406,6 +409,7 @@ def _validate_tuning_record(
         record["schema"] != _TUNING_SCHEMA
         or record["status"] != "post_hoc_hypothesis_generating_validation_only"
         or record["identity"] != expected_identity
+        or record["training"] != expected_training
     ):
         raise ValueError("dual tuning identity differs")
     partition = _object(record, "partition")
@@ -497,6 +501,7 @@ def _run_tuning_cell(
                 split=split,
                 schedule=schedule,
                 seed=seed,
+                device=device,
             )
             for schedule in schedules
         }
@@ -506,7 +511,20 @@ def _run_tuning_cell(
             path = _tuning_path(output, split_name, window, schedule, seed)
             if path.exists():
                 record = _load_json(path)
-                _validate_tuning_record(record, identities[schedule.name])
+                expected_training = _training_json(
+                    _training_config(
+                        protocol,
+                        parent,
+                        schedule,
+                        seed=seed,
+                        device=device,
+                    )
+                )
+                _validate_tuning_record(
+                    record,
+                    identities[schedule.name],
+                    expected_training,
+                )
                 existing_initializations.append(_object(record, "initialization"))
             else:
                 missing.append(schedule)
@@ -587,6 +605,7 @@ def _selection_record(
     parent: DualParentCell,
     split: SplitArtifact,
     output: Path,
+    device: str,
 ) -> dict[str, JsonValue]:
     candidate_records: list[dict[str, JsonValue]] = []
     for order, schedule in enumerate(protocol.alpha_schedules()):
@@ -606,9 +625,22 @@ def _selection_record(
                 split=split,
                 schedule=schedule,
                 seed=seed,
+                device=device,
             )
             record = _load_json(path)
-            _validate_tuning_record(record, identity)
+            _validate_tuning_record(
+                record,
+                identity,
+                _training_json(
+                    _training_config(
+                        protocol,
+                        parent,
+                        schedule,
+                        seed=seed,
+                        device=device,
+                    )
+                ),
+            )
             selected = _object(record, "selected_validation")
             seed_records.append(
                 {
@@ -667,6 +699,7 @@ def _selection_record(
             "parent_evaluation_sha256": parent.evaluation_sha256,
             "optimization_indices_sha256": _index_sha256(split.optimization_indices),
             "validation_indices_sha256": _index_sha256(split.validation_indices),
+            "runtime_device": device,
         },
         "selection_rule": (
             "minimum_mean_over_seeds_of_each_seed_minimum_validation_"
@@ -728,6 +761,7 @@ def _select_tuning_cell(
     parent: DualParentCell,
     split: SplitArtifact,
     output: Path,
+    device: str,
 ) -> dict[str, object]:
     expected = _selection_record(
         code_git_commit=code_git_commit,
@@ -741,6 +775,7 @@ def _select_tuning_cell(
         parent=parent,
         split=split,
         output=output,
+        device=device,
     )
     path = _cell_directory(output, split_name, window) / "selection.json"
     _publish_or_verify_json(path, expected)
@@ -810,7 +845,12 @@ def _publish_refit(
         raise ValueError("dual refit learned table contains held-out test rows")
     payload = _refit_payload(result, partition.global_indices)
     if directory.exists():
-        _verify_refit(directory, identity, partition.global_indices)
+        _verify_refit(
+            directory,
+            identity,
+            _training_json(config),
+            partition.global_indices,
+        )
         return
     directory.parent.mkdir(parents=True, exist_ok=True)
     temporary = directory.parent / f".{directory.name}.{secrets.token_hex(16)}.tmp"
@@ -846,6 +886,7 @@ def _publish_refit(
 def _verify_refit(
     directory: Path,
     expected_identity: dict[str, JsonValue],
+    expected_training: dict[str, JsonValue],
     expected_global_indices: t.Tensor,
 ) -> tuple[dict[str, object], dict[str, t.Tensor]]:
     if {path.name for path in directory.iterdir()} != {"metadata.json", "model.safetensors"}:
@@ -868,6 +909,7 @@ def _verify_refit(
         set(metadata) != expected_keys
         or metadata.get("schema") != _REFIT_SCHEMA
         or metadata.get("identity") != expected_identity
+        or metadata.get("training") != expected_training
         or metadata.get("model_file") != model_path.name
         or metadata.get("model_sha256") != sha256_file(model_path)
     ):
@@ -935,6 +977,7 @@ def _refit_identity(
     schedule: AlphaSchedule,
     seed: int,
     selected_steps: int,
+    device: str,
 ) -> dict[str, JsonValue]:
     return {
         "code_git_commit": code_git_commit,
@@ -956,6 +999,7 @@ def _refit_identity(
         "alpha_strategy": schedule.name,
         "seed": seed,
         "selected_steps": selected_steps,
+        "runtime_device": device,
     }
 
 
@@ -1003,10 +1047,23 @@ def _run_refits(
             schedule=schedule,
             seed=seed,
             selected_steps=selected_steps,
+            device=device,
+        )
+        config = _training_config(
+            protocol,
+            parent,
+            schedule,
+            seed=seed,
+            device=device,
         )
         directory = _refit_directory(output, split_name, window, seed)
         if directory.exists():
-            _verify_refit(directory, identity, split.primary_train_indices)
+            _verify_refit(
+                directory,
+                identity,
+                _training_json(config),
+                split.primary_train_indices,
+            )
             print(
                 f"dual refit reused split={split_name} window={window} seed={seed}",
                 flush=True,
@@ -1021,13 +1078,6 @@ def _run_refits(
             partition,
             protocol,
             parent,
-            seed=seed,
-            device=device,
-        )
-        config = _training_config(
-            protocol,
-            parent,
-            schedule,
             seed=seed,
             device=device,
         )
@@ -1545,6 +1595,7 @@ def _results_identity(
     split: SplitArtifact,
     selection_path: Path,
     refit_hashes: tuple[str, ...],
+    device: str,
 ) -> dict[str, JsonValue]:
     return {
         "code_git_commit": code_git_commit,
@@ -1566,6 +1617,7 @@ def _results_identity(
         "refit_metadata_sha256": list(refit_hashes),
         "primary_train_indices_sha256": _index_sha256(split.primary_train_indices),
         "test_indices_sha256": _index_sha256(split.test_indices),
+        "runtime_device": device,
     }
 
 
@@ -1649,11 +1701,22 @@ def _run_evaluation_cell(
             schedule=schedule,
             seed=seed,
             selected_steps=selected_steps,
+            device=device,
+        )
+        expected_training = _training_json(
+            _training_config(
+                protocol,
+                parent,
+                schedule,
+                seed=seed,
+                device=device,
+            )
         )
         directory = _refit_directory(output, split_name, window, seed)
         metadata, payload = _verify_refit(
             directory,
             identity,
+            expected_training,
             split.primary_train_indices,
         )
         if bool(t.isin(payload["global_indices"], split.test_indices).any().item()):
@@ -1674,6 +1737,7 @@ def _run_evaluation_cell(
         split=split,
         selection_path=selection_path,
         refit_hashes=tuple(refit_hashes),
+        device=device,
     )
     results_path = _cell_directory(output, split_name, window) / "results.json"
     if results_path.exists():
@@ -1891,24 +1955,20 @@ def main() -> None:
                     output=arguments.output,
                     device=arguments.device,
                 )
-                selection = _select_tuning_cell(
-                    code_git_commit=code_git_commit,
-                    dual_config_sha256=dual_config_sha256,
-                    protocol=protocol,
-                    bundle=bundle,
-                    target_sha256=target_sha256,
-                    split_name=split_name,
-                    split_sha256=split_sha256,
-                    window=window,
-                    parent=parent,
-                    split=split,
-                    output=arguments.output,
-                )
-            else:
-                selection = _load_json(
-                    _cell_directory(arguments.output, split_name, window) / "selection.json"
-                )
-                _validate_selection(selection)
+            selection = _select_tuning_cell(
+                code_git_commit=code_git_commit,
+                dual_config_sha256=dual_config_sha256,
+                protocol=protocol,
+                bundle=bundle,
+                target_sha256=target_sha256,
+                split_name=split_name,
+                split_sha256=split_sha256,
+                window=window,
+                parent=parent,
+                split=split,
+                output=arguments.output,
+                device=arguments.device,
+            )
             if arguments.phase in {"evaluate", "all"}:
                 _run_refits(
                     code_git_commit=code_git_commit,
