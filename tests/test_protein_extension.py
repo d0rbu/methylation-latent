@@ -224,9 +224,9 @@ def test_sequence_mappers_and_free_vectors_are_unit_sphere_points() -> None:
 
 
 def test_protein_objective_averages_blocks_separately_and_excludes_diagonal() -> None:
-    probes = normalize_rows_strict(t.tensor([[1.0, 0.0], [0.0, 1.0]]))
+    probes = normalize_rows_strict(t.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]))
     proteins = normalize_rows_strict(t.tensor([[1.0, 1.0], [1.0, -1.0]]))
-    cross_target = t.zeros((2, 2))
+    cross_target = t.zeros((3, 2))
     gram_target = t.tensor([[100.0, 0.5], [0.5, -100.0]])
     terms = protein_objective(
         probes,

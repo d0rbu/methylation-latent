@@ -21,7 +21,8 @@ from methylation_latent.targets import (
 
 MeasurementMatrix = Float64[t.Tensor, "measurements samples"]
 ProteinFeatures = Float[t.Tensor, "proteins features"]
-LatentRows = Float[t.Tensor, "rows latent"]
+ProbeLatentRows = Float[t.Tensor, "probes latent"]
+ProteinLatentRows = Float[t.Tensor, "proteins latent"]
 IndexVector = Int64[t.Tensor, "selected"]
 
 
@@ -253,8 +254,8 @@ class ProteinObjectiveTerms:
 
 @jaxtyped(typechecker=beartype)
 def protein_objective(
-    probe_latent: LatentRows,
-    protein_latent: LatentRows,
+    probe_latent: ProbeLatentRows,
+    protein_latent: ProteinLatentRows,
     cross_target: t.Tensor,
     protein_gram_target: t.Tensor,
     *,
