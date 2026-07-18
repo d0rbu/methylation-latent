@@ -52,6 +52,12 @@ exception (`processed_transcript`); that record still has the exact MMP12 HGNC d
 canonical ENST transcript, a reviewed MMP12 UniProt sequence, and an interval overlapping the
 source paper's Build-37 MMP12 interval. Any additional biotype exception is an error.
 
+The GRCh37 Ensembl symbol endpoint places PECAM1 on alternate contig `HG183_PATCH`; it is the only
+selected non-primary placement. The byte-pinned paper supplement gives the primary placement
+`chr17:62396775-62491136`. The minus-strand TSS, `62491136`, agrees exactly with the patch record.
+The protocol therefore pins that primary chr17 interval as the sole placement exception. All
+other loci must resolve directly to chromosomes 1–22, X, or Y.
+
 ## Target-blind protein split and objective
 
 SHA-256 ordering of `seed:HGNC-symbol` fixes 36 training, 8 validation, and 8 test proteins without

@@ -423,6 +423,45 @@ def main() -> None:
         genes,
         biotype_exceptions=cast(dict[str, str], exceptions_raw),
     )
+    placement_raw = sequence_config.get("grch37_primary_placement_exceptions")
+    expected_placement: dict[str, object] = {
+        "PECAM1": {
+            "ensembl_seq_region": "HG183_PATCH",
+            "chromosome": "17",
+            "start": 62_396_775,
+            "end": 62_491_136,
+            "strand": -1,
+            "source": "Ahsan2017_S1_biomarkers.xlsx",
+        }
+    }
+    if placement_raw != expected_placement:
+        raise ValueError("frozen GRCh37 primary-placement exception set differs")
+    primary_contigs = {*map(str, range(1, 23)), "X", "Y"}
+    observed_nonprimary = tuple(
+        locus.gene_symbol for locus in loci if locus.chromosome not in primary_contigs
+    )
+    if observed_nonprimary != ("PECAM1",):
+        raise ValueError(
+            "selected Ensembl non-primary placements differ: "
+            f"observed={observed_nonprimary}"
+        )
+    loci = tuple(
+        GeneLocus(
+            gene_symbol=locus.gene_symbol,
+            chromosome="17",
+            start=62_396_775,
+            end=62_491_136,
+            strand=-1,
+        )
+        if locus.gene_symbol == "PECAM1"
+        and locus.chromosome == "HG183_PATCH"
+        and locus.end == 62_491_136
+        and locus.strand == -1
+        else locus
+        for locus in loci
+    )
+    if next(locus for locus in loci if locus.gene_symbol == "PECAM1").chromosome != "17":
+        raise ValueError("PECAM1 primary-placement exception was not applied exactly")
     if sha256_ordered_strings(ensembl_hash_input) != _string(
         sources_config, "ensembl_lookup_set_sha256"
     ):
@@ -549,6 +588,9 @@ def main() -> None:
                 }
                 for locus in loci
             ],
+            "grch37_primary_placement_exceptions": cast(
+                dict[str, JsonValue], expected_placement
+            ),
             "common_subject_count": len(common_gsms),
             "common_subject_order_sha256": sha256_ordered_strings(common_gsms),
             "selection_audit": selection_audit,
