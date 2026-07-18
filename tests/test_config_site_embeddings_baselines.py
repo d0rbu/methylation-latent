@@ -24,6 +24,7 @@ from methylation_latent.embeddings import (
     embed_all_sequences,
     embed_center_tokens,
     embed_sequence_batches,
+    embed_unconstrained_center_tokens,
     load_pinned_caduceus,
 )
 from methylation_latent.evaluation import PairPopulation
@@ -258,6 +259,39 @@ def test_center_token_embedding_disables_special_tokens_and_never_pools() -> Non
         )
 
 
+def test_unconstrained_center_embedding_allows_non_cpg_tss_but_keeps_io_contract() -> None:
+    sequences = ("AAAAAA", "TTTGTA")
+    result = embed_unconstrained_center_tokens(
+        sequences,
+        tokenizer=FakeTokenizer(),
+        model=FakeModel(),
+        config=_embedding_config(),
+    )
+    full = FakeModel()(input_ids=t.zeros((2, 6), dtype=t.int64)).last_hidden_state
+    assert t.equal(result, full[:, 3, :256].to(t.float16))
+    with pytest.raises(ValueError, match="non-ACGT"):
+        embed_unconstrained_center_tokens(
+            ("AAANAA",),
+            tokenizer=FakeTokenizer(),
+            model=FakeModel(),
+            config=_embedding_config(),
+        )
+    with pytest.raises(ValueError, match="at least one sequence"):
+        embed_unconstrained_center_tokens(
+            (),
+            tokenizer=FakeTokenizer(),
+            model=FakeModel(),
+            config=_embedding_config(),
+        )
+    with pytest.raises(ValueError, match="shape differs"):
+        embed_unconstrained_center_tokens(
+            sequences,
+            tokenizer=FakeTokenizer(),
+            model=FakeModel(hidden_delta=1),
+            config=_embedding_config(),
+        )
+
+
 @pytest.mark.parametrize("sequence", ["AACATT", "AACNTT", "AACGT", ""])
 def test_embedding_sequence_contract_rejects_invalid_windows(sequence: str) -> None:
     with pytest.raises(ValueError):
@@ -409,6 +443,12 @@ def test_pinned_loader_verifies_snapshot_bytes(
     (snapshot / "model.safetensors").write_bytes(b"checkpoint")
     monkeypatch.setattr("methylation_latent.embeddings.sha256_file", lambda _: "0" * 64)
     with pytest.raises(ValueError, match="checkpoint hash differs"):
+        load_pinned_caduceus(cache_directory=tmp_path / "cache", config=_embedding_config())
+    monkeypatch.setattr(
+        "methylation_latent.embeddings.sha256_file", lambda _: CADUCEUS_CHECKPOINT_SHA256
+    )
+    LoadedModelStub.config = SimpleNamespace(d_model=255, rcps=True)
+    with pytest.raises(ValueError, match="architecture differs"):
         load_pinned_caduceus(cache_directory=tmp_path / "cache", config=_embedding_config())
 
 

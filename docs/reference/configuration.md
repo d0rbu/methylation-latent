@@ -62,3 +62,11 @@ and 16,384-base projection window.
 The protocol status is `frozen`. Do not edit v2 in place after evaluation begins. A changed source,
 threshold, split, seed, grid, optimizer, selection score, feature map, or metric requires a new
 protocol ID and artifact root.
+
+## Post-hoc protein extension
+
+`configs/protein-extension-v1.toml` is a separate frozen protocol. It does not modify v2. It pins
+the outcome-selected public protein panel audit, 52 unique HGNC/UniProt mappings, 651-subject
+complete-case expectation, GRCh37 Ensembl lookup bytes, Caduceus and ESM-2 checkpoints, target-blind
+protein split, representation sweep, separately averaged objective, and refit rule. Changing any
+of those choices requires a new protein protocol and output root.

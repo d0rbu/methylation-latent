@@ -19,6 +19,9 @@ GSE87571 IDATs; references to the unavailable GSE40279 primary run are historica
   — deterministic validation-only interactive two-sphere UMAP with the learned age direction
 - [`research/age-scatter-cluster-audit.md`](research/age-scatter-cluster-audit.md)
   — target-aware post-hoc diagnosis of the two age-association lobes
+- [`research/exploratory-protein-extension.md`](research/exploratory-protein-extension.md)
+  — post-hoc protein anchors, sequence representations, unseen-protein split, and interpretation
+  limits
 
 ## Pipelines
 

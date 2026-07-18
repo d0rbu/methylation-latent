@@ -44,6 +44,10 @@ A finalized cache cannot accept another shard.
 | `validation-latent-umap.v3` | deterministic post-hoc exact-Torch UMAP using intrinsic geodesic input distances and unit-`S^2` geodesic output distances for context-balanced nested-validation loci plus age; includes Stress-1, distance correlation, and neighbor recall; no test loci or targets |
 | `prediction-scatter.v1` | display-only target-blind samples from frozen evaluation pairs and held-out age predictions; carries source hashes and performs no fitting |
 | `age-scatter-cluster-audit.v1` | target-aware post-hoc k=2 diagnosis on every frozen-test age-scatter point with context, sequence-feature, probe, chromosome, and sex-stratified associations; never a model-selection artifact |
+| `protein-targets.v1` | 52 proteins and 651 complete common subjects; float64 probe-protein, protein-protein, probe-age, and direct residualized protein-age targets plus target-blind protein partitions |
+| `protein-tss-embeddings.v1` | 52 GRCh37 TSS-centred hg19 plus-strand Caduceus embeddings for one frozen window; records every interval and centre base |
+| `protein-amino-acid-embeddings.v1` | 52 reviewed canonical UniProt sequences embedded by pinned ESM-2; all residues covered exactly once and long proteins never truncated |
+| `protein-extension-results.v1` | four frozen parent probe geometries by five protein representations, separate inductive populations, cis/trans and overlap audits, protein-pair metrics, age-edge diagnostics, and display-only scatters |
 
 ## Identity rules
 

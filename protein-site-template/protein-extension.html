@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Methylation Latent · Protein extension</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="protein-extension.css">
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">Sequence → methylation ↔ protein geometry</p>
+      <h1>Post-hoc protein extension</h1>
+      <p id="status" class="status">Loading the immutable protein experiment artifact…</p>
+      <div class="metadata">
+        <span id="protocol"></span>
+        <span class="badge">POST-HOC · HYPOTHESIS-GENERATING</span>
+      </div>
+      <nav aria-label="Report navigation">
+        <a href="index.html">Main methylation report</a>
+      </nav>
+    </header>
+    <main>
+      <section class="warning">
+        <h2>Two limits that change the interpretation</h2>
+        <p id="selection-warning"></p>
+        <p id="adjustment-warning"></p>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Frozen parent geometry · new post-hoc targets</p>
+        <h2>What generalized to unseen proteins?</h2>
+        <div id="headline" class="summary-grid"></div>
+        <p>The strongest claim is the <strong>held-out CpG × held-out protein</strong> result:
+          neither the genomic probe nor the protein entered map fitting. Every displayed CpG–protein
+          metric excludes pairs whose input windows overlap. The free-vector row is transductive and
+          is shown only as an upper bound.</p>
+        <div class="table-wrap"><table id="metrics-table"></table></div>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Predicted versus empirical correlations</p>
+        <h2>Held-out CpG × held-out protein scatter</h2>
+        <label>Experiment <select id="scatter-select"></select></label>
+        <canvas id="correlation-scatter" width="900" height="600"
+          aria-label="Predicted versus empirical CpG-protein correlations"></canvas>
+        <div id="scatter-metrics" class="metric-strip"></div>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Cis/trans and overlap audit</p>
+        <h2>Does proximity explain the result?</h2>
+        <p>“Cis” means the CpG and protein-coding gene share a chromosome; “trans” means they do not.
+          Overlapping input windows are removed rather than treated as easy examples.</p>
+        <div id="strata-table" class="table-wrap"></div>
+      </section>
+      <section>
+        <p class="section-label exploratory-label">Age edge is imputed, not directly identified</p>
+        <h2>Protein proximity to the learned age direction</h2>
+        <label>Experiment <select id="age-select"></select></label>
+        <div class="canvas-grid">
+          <div><h3>Against direct residualized protein–age correlation</h3>
+            <canvas id="direct-age-scatter" width="600" height="520"></canvas></div>
+          <div><h3>Against methylation-profile age concordance</h3>
+            <canvas id="profile-age-scatter" width="600" height="520"></canvas></div>
+        </div>
+        <p class="empty">The source protein values were already adjusted for age. A protein’s cosine
+          to the parent age vector is therefore a model-imputed edge; it must not be relabeled as an
+          observed protein–aging correlation. The methylation-profile panel asks the narrower,
+          identifiable question: do proteins with age-like CpG correlation profiles land nearer the
+          age direction?</p>
+        <div class="table-wrap"><table id="protein-table"></table></div>
+      </section>
+      <section>
+        <h2>Design and provenance</h2>
+        <ul id="provenance"></ul>
+        <details>
+          <summary>Exact objective</summary>
+          <p><code id="loss-formula"></code></p>
+          <p>Each block is averaged separately before applying λ<sub>protein-pairs</sub> =
+            <span id="lambda-pairs"></span>. Protein–protein diagonals are excluded.</p>
+        </details>
+      </section>
+    </main>
+    <script src="protein-extension.js"></script>
+  </body>
+</html>

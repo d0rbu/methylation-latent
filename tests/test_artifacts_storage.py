@@ -108,6 +108,16 @@ def test_reference_archive_hash_and_decompressed_identity(tmp_path: Path) -> Non
     payload.write_bytes(b">chr1\nACGA\n")
     with pytest.raises(ValueError, match="differ"):
         assert_gzip_payload_matches_file(archive, payload)
+    payload.write_bytes(b">chr1\nACGT\nextra")
+    with pytest.raises(ValueError, match="trailing bytes"):
+        assert_gzip_payload_matches_file(archive, payload)
+    empty_archive = tmp_path / "empty.fa.gz"
+    empty_payload = tmp_path / "empty.fa"
+    empty_payload.write_bytes(b"")
+    with gzip.open(empty_archive, mode="wb"):
+        pass
+    with pytest.raises(ValueError, match="payload is empty"):
+        assert_gzip_payload_matches_file(empty_archive, empty_payload)
     with pytest.raises(ValueError, match="positive"):
         md5_file(archive, chunk_size=0)
     with pytest.raises(ValueError, match="positive"):
@@ -151,6 +161,11 @@ def test_metadata_roundtrip_and_payload_tamper_detection(tmp_path: Path) -> None
     metadata_path, metadata = _finalized_metadata(tmp_path)
     loaded = load_metadata(metadata_path)
     assert loaded == metadata
+    raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    raw["checks"][0]["tolerance"] = 0.1
+    numeric_tolerance_path = tmp_path / "numeric-tolerance.json"
+    numeric_tolerance_path.write_text(json.dumps(raw), encoding="utf-8")
+    assert load_metadata(numeric_tolerance_path).checks[0].tolerance == 0.1
     verify_payload(metadata_path, loaded)
     (tmp_path / "payload.txt").write_text("tampered\n", encoding="utf-8")
     with pytest.raises(ValueError, match="hash|size"):

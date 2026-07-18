@@ -1,0 +1,272 @@
+schema = "methylation-latent.protein-extension-protocol.v1"
+protocol_id = "gse87571-posthoc-protein-extension-v1"
+status = "frozen"
+scientific_status = "post_hoc_hypothesis_generating"
+parent_protocol_id = "gse87571-hg19-caduceus-ps-v2"
+parent_bundle_sha256 = "0669b85ff68229877b5dba4377342ae35ecdfc2f08a7bdc9fde27bd8f6f2f283"
+
+[sources]
+additional_characteristics_sha256 = "829e6c484feb44188d4bb9eaf682f95f1f86a87f94510ba41e1866c26d327d90"
+biomarker_table_sha256 = "4874f3009c06b0078ad89720a2317bb94bc17c0a8ac0da3f00df66d51d332579"
+gwas_table_sha256 = "1db45c01198c6f0bc66e54f9b0177981d2cb562c7bba019906c1c16721c1c8aa"
+ewas_table_sha256 = "9533e4e5859a9658fe625c459f3b6c85c01987786e69dafc7acbc2e3f08785bc"
+uniprot_fasta_sha256 = "78016abf0ffa8c163a18f6a0981a2fa6c35276c00e6343c23a35794603449d73"
+ensembl_lookup_set_sha256 = "b2298d124aafd4c1a9cc8a85835a4ec612e0a9f8a4e94774bd29cc6f6b5a22f1"
+
+[panel]
+workbook_first_column_zero_based = 107
+workbook_last_column_zero_based = 170
+published_gwas_biomarkers = 39
+published_ewas_biomarkers = 44
+published_union_biomarkers = 65
+public_union_missing_biomarker = "CXCL9"
+minimum_complete_coverage = 656
+selected_proteins = 52
+common_subjects = 651
+values = "rank-normalized residuals adjusted by the source study for age, sex, BMI, collection year, and assay plate"
+selection_warning = "The public 64-protein panel is the union of proteins with significant GWAS or EWAS results, except CXCL9; it is not an unbiased proteome panel."
+
+[protein_split]
+seed = 902017
+validation_count = 8
+test_count = 8
+train_genes = ["ESM1", "CXCL10", "IL1RL1", "IL12B", "KDR", "RNASE3", "LGALS3", "HBEGF", "CCL4", "CHI3L1", "SELE", "DKK1", "CXCL6", "CX3CL1", "FLT3LG", "TEK", "ADM", "FGF23", "CXCL13", "TNFRSF1A", "MMP12", "GAL", "IL6R", "PGF", "CD40", "PLAT", "EPCAM", "CXCL5", "SRC", "PECAM1", "MMP10", "AGER", "WFDC2", "GDF15", "CXCL11", "TNFSF10"]
+validation_genes = ["CXCL1", "RETN", "MDK", "CCL2", "AGRP", "IL27", "CCL19", "IL18"]
+test_genes = ["IL2RA", "CCL24", "THBD", "KITLG", "MMP7", "HAVCR1", "IKBKG", "VEGFA"]
+
+[sequence]
+genome_build = "GRCh37/hg19"
+reference_strand = "plus"
+tss_definition = "Ensembl GRCh37 gene start on + strand or gene end on - strand"
+window_sizes = [1024, 4096]
+caduceus_repository = "kuleshov-group/caduceus-ps_seqlen-131k_d_model-256_n_layer-16"
+caduceus_revision = "d89eeb853136ea64da7feb3d0c8e909771b17ae6"
+caduceus_checkpoint_sha256 = "a3e6976fe90460ff5d90d371b457d0263dc65e156ea5651b4a452e98228daef2"
+esm_repository = "facebook/esm2_t6_8M_UR50D"
+esm_revision = "c731040fcd8d73dceaa04b0a8e6329b345b0f5df"
+esm_checkpoint_sha256 = "24c5fa474c48f3b754b86efe752d5f189d2bcd88190fa2270fc92b2ef3034189"
+esm_embedding_width = 320
+esm_maximum_residues = 1022
+esm_pooling = "residue-count-weighted mean of non-overlapping chunk means"
+combined_preprocessing = "row-L2-normalize each fixed modality independently before concatenation"
+
+[training]
+representations = ["free", "shared_tss", "tss_linear", "amino_acid_linear", "combined_linear"]
+learning_rate = 0.001
+weight_decay = 0.0
+lambda_protein_pairs = 1.0
+steps = 2000
+validation_interval = 100
+probe_batch_size = 4096
+seed = 440221
+checkpoint_rule = "minimum separately-averaged validation CpG-protein plus protein-protein MSE"
+refit_rule = "selected step on complete primary-train CpGs and train-plus-validation proteins"
+
+[[proteins]]
+name = "Adrenomedullin"
+gene = "ADM"
+uniprot = "P35318"
+[[proteins]]
+name = "CCL24"
+gene = "CCL24"
+uniprot = "O00175"
+[[proteins]]
+name = "CCL19"
+gene = "CCL19"
+uniprot = "Q99731"
+[[proteins]]
+name = "CXCL10"
+gene = "CXCL10"
+uniprot = "P02778"
+[[proteins]]
+name = "CXCL11"
+gene = "CXCL11"
+uniprot = "O14625"
+[[proteins]]
+name = "CXCL13"
+gene = "CXCL13"
+uniprot = "O43927"
+[[proteins]]
+name = "CXCL5"
+gene = "CXCL5"
+uniprot = "P42830"
+[[proteins]]
+name = "E:selectin"
+gene = "SELE"
+uniprot = "P16581"
+[[proteins]]
+name = "Ep:CAM"
+gene = "EPCAM"
+uniprot = "P16422"
+[[proteins]]
+name = "Flt3L"
+gene = "FLT3LG"
+uniprot = "P49771"
+[[proteins]]
+name = "GDF:15"
+gene = "GDF15"
+uniprot = "Q99988"
+[[proteins]]
+name = "Galectin:3"
+gene = "LGALS3"
+uniprot = "P17931"
+[[proteins]]
+name = "HB:EGF"
+gene = "HBEGF"
+uniprot = "Q99075"
+[[proteins]]
+name = "WFDC2"
+gene = "WFDC2"
+uniprot = "Q14508"
+[[proteins]]
+name = "IL:12"
+gene = "IL12B"
+uniprot = "P29460"
+[[proteins]]
+name = "IL2RA"
+gene = "IL2RA"
+uniprot = "P01589"
+[[proteins]]
+name = "IL6RA"
+gene = "IL6R"
+uniprot = "P08887"
+[[proteins]]
+name = "MCP:1"
+gene = "CCL2"
+uniprot = "P13500"
+[[proteins]]
+name = "Midkine"
+gene = "MDK"
+uniprot = "P21741"
+[[proteins]]
+name = "PECAM:1"
+gene = "PECAM1"
+uniprot = "P16284"
+[[proteins]]
+name = "PlGF"
+gene = "PGF"
+uniprot = "P49763"
+[[proteins]]
+name = "Stem_cell_factor"
+gene = "KITLG"
+uniprot = "P21583"
+[[proteins]]
+name = "TIE2"
+gene = "TEK"
+uniprot = "Q02763"
+[[proteins]]
+name = "TNF:RI"
+gene = "TNFRSF1A"
+uniprot = "P19438"
+[[proteins]]
+name = "VEGF:A"
+gene = "VEGFA"
+uniprot = "P15692"
+[[proteins]]
+name = "VEGFR:2"
+gene = "KDR"
+uniprot = "P35968"
+[[proteins]]
+name = "SRC"
+gene = "SRC"
+uniprot = "P12931"
+[[proteins]]
+name = "TRAIL"
+gene = "TNFSF10"
+uniprot = "P50591"
+[[proteins]]
+name = "IL27:A"
+gene = "IL27"
+uniprot = "Q8NEV9"
+[[proteins]]
+name = "CXCL1"
+gene = "CXCL1"
+uniprot = "P09341"
+[[proteins]]
+name = "FGF:23"
+gene = "FGF23"
+uniprot = "Q9GZV9"
+[[proteins]]
+name = "IL:18"
+gene = "IL18"
+uniprot = "Q14116"
+[[proteins]]
+name = "RETN"
+gene = "RETN"
+uniprot = "Q9HD89"
+[[proteins]]
+name = "CHI3L1"
+gene = "CHI3L1"
+uniprot = "P36222"
+[[proteins]]
+name = "ST2"
+gene = "IL1RL1"
+uniprot = "Q01638"
+[[proteins]]
+name = "TIM"
+gene = "HAVCR1"
+uniprot = "Q96D42"
+[[proteins]]
+name = "TM"
+gene = "THBD"
+uniprot = "P07204"
+[[proteins]]
+name = "MMP:10"
+gene = "MMP10"
+uniprot = "P09238"
+[[proteins]]
+name = "CCL4"
+gene = "CCL4"
+uniprot = "P13236"
+[[proteins]]
+name = "RAGE"
+gene = "AGER"
+uniprot = "Q15109"
+[[proteins]]
+name = "MMP:7"
+gene = "MMP7"
+uniprot = "P09237"
+[[proteins]]
+name = "CXCL6"
+gene = "CXCL6"
+uniprot = "P80162"
+[[proteins]]
+name = "Dkk:1"
+gene = "DKK1"
+uniprot = "O94907"
+[[proteins]]
+name = "GAL"
+gene = "GAL"
+uniprot = "P22466"
+[[proteins]]
+name = "AGRP"
+gene = "AGRP"
+uniprot = "O00253"
+[[proteins]]
+name = "CD40"
+gene = "CD40"
+uniprot = "P25942"
+[[proteins]]
+name = "t:PA"
+gene = "PLAT"
+uniprot = "P00750"
+[[proteins]]
+name = "ESM:1"
+gene = "ESM1"
+uniprot = "Q9NQ30"
+[[proteins]]
+name = "MMP:12"
+gene = "MMP12"
+uniprot = "P39900"
+[[proteins]]
+name = "CX3CL1"
+gene = "CX3CL1"
+uniprot = "P78423"
+[[proteins]]
+name = "NEMO"
+gene = "IKBKG"
+uniprot = "Q9Y6K9"
+[[proteins]]
+name = "ECP"
+gene = "RNASE3"
+uniprot = "P12724"

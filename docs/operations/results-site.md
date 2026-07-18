@@ -68,6 +68,22 @@ manifest/sequence-feature joins for every displayed probe, and the deterministic
 runtime contract before writing any split page. The ULP allowance covers independently ordered
 float64 reductions; counts remain exact.
 
+### Add the post-hoc protein report
+
+The protein extension is compiled as a linked page without weakening or rewriting the v5 site-data
+schema. Start from an already validated, immutable interim site and write a new exclusive directory:
+
+```bash
+uv run python scripts/compile_protein_extension_report.py \
+  --base-site "$RUN_ROOT/interim-site-v5" \
+  --results "$RUN_ROOT/exploratory/protein-extension-v1/results/results.json" \
+  --output "$RUN_ROOT/interim-site-v6"
+```
+
+The compiler requires all 20 records (two split families, two windows, five representations),
+copies the validated base site, adds `protein-extension.html`, and links it from the existing
+landing page. It never edits an existing site directory in place.
+
 ## Compile
 
 ```bash

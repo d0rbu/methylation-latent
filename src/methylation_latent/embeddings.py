@@ -83,7 +83,7 @@ class LoadedCaduceus:
     snapshot_path: Path
 
 
-def _validate_sequences(sequences: Sequence[str]) -> int:
+def _validate_sequence_width(sequences: Sequence[str]) -> int:
     if not sequences:
         raise ValueError("embedding batch must contain at least one sequence")
     lengths = {len(sequence) for sequence in sequences}
@@ -95,6 +95,11 @@ def _validate_sequences(sequences: Sequence[str]) -> int:
     invalid = sorted(set("".join(sequences).upper()) - set("ACGT"))
     if invalid:
         raise ValueError(f"embedding sequences contain non-ACGT characters: {invalid}")
+    return width
+
+
+def _validate_sequences(sequences: Sequence[str]) -> int:
+    width = _validate_sequence_width(sequences)
     centre = width // 2
     failures = tuple(
         index
@@ -104,6 +109,10 @@ def _validate_sequences(sequences: Sequence[str]) -> int:
     if failures:
         raise ValueError(f"embedding sequences are not centred on plus-strand CG: {failures[:10]}")
     return width
+
+
+def _validate_unconstrained_sequences(sequences: Sequence[str]) -> int:
+    return _validate_sequence_width(sequences)
 
 
 @beartype
@@ -158,17 +167,14 @@ def load_pinned_caduceus(
     )
 
 
-@beartype
-def embed_center_tokens(
+def _embed_validated_center_tokens(
     sequences: Sequence[str],
+    width: int,
     *,
     tokenizer: TokenizerProtocol,
     model: BackboneProtocol,
     config: EmbeddingInferenceConfig,
 ) -> t.Tensor:
-    """Embed only the plus-strand cytosine token, never a pooled representation."""
-
-    width = _validate_sequences(sequences)
     encoded = tokenizer(
         sequences,
         add_special_tokens=False,
@@ -211,6 +217,44 @@ def embed_center_tokens(
 
 
 @beartype
+def embed_center_tokens(
+    sequences: Sequence[str],
+    *,
+    tokenizer: TokenizerProtocol,
+    model: BackboneProtocol,
+    config: EmbeddingInferenceConfig,
+) -> t.Tensor:
+    """Embed only the plus-strand cytosine token, never a pooled representation."""
+
+    return _embed_validated_center_tokens(
+        sequences,
+        _validate_sequences(sequences),
+        tokenizer=tokenizer,
+        model=model,
+        config=config,
+    )
+
+
+@beartype
+def embed_unconstrained_center_tokens(
+    sequences: Sequence[str],
+    *,
+    tokenizer: TokenizerProtocol,
+    model: BackboneProtocol,
+    config: EmbeddingInferenceConfig,
+) -> t.Tensor:
+    """Embed arbitrary plus-reference-strand centres without imposing a CpG motif."""
+
+    return _embed_validated_center_tokens(
+        sequences,
+        _validate_unconstrained_sequences(sequences),
+        tokenizer=tokenizer,
+        model=model,
+        config=config,
+    )
+
+
+@beartype
 def embed_all_sequences(
     sequences: Sequence[str],
     *,
@@ -231,7 +275,7 @@ def embed_all_sequences(
         for start in range(0, len(sequences), config.batch_size)
     )
     embeddings = t.cat(shards, dim=0)
-    if embeddings.shape[0] != len(sequences):
+    if embeddings.shape[0] != len(sequences):  # pragma: no cover - concatenation proof
         raise RuntimeError("embedding concatenation changed the probe count")
     return EmbeddingMatrix(embeddings)
 

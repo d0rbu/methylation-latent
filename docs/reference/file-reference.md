@@ -5,6 +5,7 @@
 | Path | Purpose |
 |---|---|
 | `configs/protocol-v2.toml` | Frozen scientific choices and immutable external identities |
+| `configs/protein-extension-v1.toml` | Separate frozen post-hoc protein protocol, source hashes, protein identities, split, representations, and objective |
 | `scripts/prepare_gse87571.py` | Build primary cohort, targets, features, and splits |
 | `scripts/seal_primary_data.py` | Recompute invariants and seal the 17-file data bundle |
 | `scripts/run_experiments.py` | Ordered sequence/pair/age/full/evaluate stages |
@@ -15,11 +16,16 @@
 | `scripts/run_latent_tsne.py` | Deterministic exact-Torch t-SNE of context-balanced validation latent spaces |
 | `scripts/run_latent_umap.py` | Deterministic exact-Torch UMAP from hyperspherical validation latents onto the unit two-sphere plus the learned age direction |
 | `scripts/compile_interim_results_site.py` | Compile completed windows, validation sweeps, and explicitly post-hoc panels into a non-primary site |
+| `scripts/prepare_protein_extension.py` | Audit the selected public protein panel and build common-subject probe/protein targets |
+| `scripts/embed_protein_amino_acids.py` | Pinned reviewed-UniProt to ESM-2 protein embedding cache without truncation |
+| `scripts/run_protein_extension.py` | Fit free, TSS, amino-acid, and combined protein anchors in frozen probe geometries |
+| `scripts/compile_protein_extension_report.py` | Add the immutable protein experiment page to an existing compiled interim site |
 | `scripts/compile_results_site.py` | Compile validated evaluation records into static sites |
 | `results/` | Compact validated site-data artifacts after experiment completion |
 | `site-template/` | Split-specific result-page HTML, JavaScript, and CSS |
 | `interim-site-template/` | Mixed-evidence interim page with validation sweeps and post-hoc labeling |
 | `interim-site-root-template/` | Interim split-family landing page |
+| `protein-site-template/` | Post-hoc protein report page, scatter plots, tables, and caveat panels |
 | `site-root-template/` | Root landing page for the two split sites |
 
 ## Source package
@@ -50,6 +56,7 @@
 | `age_clusters.py` | Deterministic k=2, association effect sizes, label agreement, and sex-stratified age correlations |
 | `tsne.py` | Deterministic exact Torch t-SNE and balanced metadata sampling |
 | `umap.py` | Exact Torch fuzzy-neighborhood UMAP with Euclidean or intrinsic spherical-geodesic inputs, planar or unit-two-sphere outputs, spectral initialization, distortion diagnostics, and full cross-entropy objectives |
+| `protein_extension.py` | Common-axis protein targets, target-blind protein split, hyperspherical maps, loss blocks, TSS intervals, and no-truncation chunking |
 | `artifacts.py` | Canonical JSON and hashing |
 | `storage.py` | Strict safetensors persistence |
 | `site.py` | Site-data validation and static generation |
@@ -62,6 +69,9 @@
 | `environments/sesame/` | Pinned R/Bioconductor primary preprocessor |
 | `environments/methylprep/` | Python 3.10 parity-only environment |
 | `environments/caduceus/` | Python 3.11 native model environment and embedding entry point |
+
+`environments/caduceus/embed_protein_tss.py` is the protein TSS centre-token producer; it uses the
+same pinned Caduceus checkpoint but does not impose a centre-CpG motif on gene TSS windows.
 
 ## Tests
 

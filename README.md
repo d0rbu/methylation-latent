@@ -94,6 +94,7 @@ commit; they refuse to run when tracked or untracked files differ.
 | Training lifecycle | [`docs/pipelines/experiment-lifecycle.md`](docs/pipelines/experiment-lifecycle.md) |
 | Evaluation and baselines | [`docs/pipelines/evaluation.md`](docs/pipelines/evaluation.md) |
 | Results site and tunnel | [`docs/operations/results-site.md`](docs/operations/results-site.md) |
+| Post-hoc protein extension | [`docs/research/exploratory-protein-extension.md`](docs/research/exploratory-protein-extension.md) |
 
 ## License
 
