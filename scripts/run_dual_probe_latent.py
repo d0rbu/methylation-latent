@@ -1867,6 +1867,12 @@ def main() -> None:
                 window_size=parent.window_size,
                 expected_git_commit=bundle.git_commit,
             )
+            if arguments.phase == "audit":
+                print(
+                    f"dual audit passed split={split_name} window={window}",
+                    flush=True,
+                )
+                continue
             if arguments.phase in {"tune", "all"}:
                 _run_tuning_cell(
                     code_git_commit=code_git_commit,
