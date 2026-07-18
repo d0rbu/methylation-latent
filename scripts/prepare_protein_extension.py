@@ -649,7 +649,7 @@ def main() -> None:
                 "protein_gram_unit_diagonal": True,
                 "public_panel_equals_published_hit_union_minus_cxcl9": True,
                 "all_selected_uniprot_mappings_unique": True,
-                "all_selected_genes_overlap_published_grch37_intervals": True,
+                "all_selected_gene_coordinates_audited_with_pinned_discrepancies": True,
             },
         },
     )
