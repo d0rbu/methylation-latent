@@ -23,10 +23,10 @@ sex, BMI, collection year, and assay plate. Consequently:
 - the report separately compares the cosine with direct residualized protein-age correlation and
   with concordance between the protein's CpG-correlation profile and the CpG-age profile.
 
-Of the 64 public proteins, the protocol retains the 52 with at least 656 observed subjects. Their
-complete intersection with the sealed 706-subject methylation cohort contains exactly 651
-subjects. All probe-protein, protein-protein, probe-age, and direct protein-age targets are rebuilt
-on this one common subject axis. They are never joined from separately standardized cohorts.
+Of the 64 public proteins, the protocol retains the 52 with at least 656 observations within the
+sealed 706-subject methylation cohort. Their complete intersection contains exactly 651 subjects.
+All probe-protein, protein-protein, probe-age, and direct protein-age targets are rebuilt on this
+one common subject axis. They are never joined from separately standardized cohorts.
 
 ## Fixed representations
 

@@ -334,19 +334,6 @@ def main() -> None:
         panel_config=panel_config,
     )
     data_rows = tuple(workbook_rows[number] for number in sorted(workbook_rows) if number > 3)
-    coverage = {
-        workbook_headers[offset]: sum(
-            row.get(column, "") not in {"", "NA"} for row in data_rows
-        )
-        for offset, column in enumerate(columns)
-    }
-    eligible_headers = tuple(
-        name
-        for name in workbook_headers
-        if coverage[name] >= _integer(panel_config, "minimum_complete_coverage")
-    )
-    if set(eligible_headers) != set(names) or len(eligible_headers) != len(names):
-        raise ValueError("coverage-selected protein names differ from the frozen 52-protein panel")
     by_gsm: dict[str, dict[int, str]] = {}
     for row in data_rows:
         gsm = row.get(0, "")
@@ -360,6 +347,25 @@ def main() -> None:
         arguments.data / "cohort.json",
         probe_universe=probes,
     )
+    if not set(cohort.sample_gsm_ids) <= set(by_gsm):
+        raise ValueError("sealed methylation subjects are absent from the protein workbook")
+    retained_gsms = set(cohort.sample_gsm_ids)
+    coverage = {
+        workbook_headers[offset]: sum(
+            row.get(column, "") not in {"", "NA"} and row[0] in retained_gsms
+            for row in data_rows
+        )
+        for offset, column in enumerate(columns)
+    }
+    eligible_headers = tuple(
+        name
+        for name in workbook_headers
+        if coverage[name] >= _integer(panel_config, "minimum_retained_cohort_coverage")
+    )
+    if set(eligible_headers) != set(names) or len(eligible_headers) != len(names):
+        raise ValueError(
+            "retained-cohort coverage-selected protein names differ from the frozen 52-protein panel"
+        )
     selected_columns = tuple(columns[workbook_headers.index(name)] for name in names)
     common_gsms = tuple(
         gsm
