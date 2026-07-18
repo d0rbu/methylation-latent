@@ -33,6 +33,7 @@ from methylation_latent.protein_extension import (
     standardize_measurement_rows,
     target_blind_protein_split,
     tss_window_interval,
+    unique_unordered_pair_mask,
 )
 from methylation_latent.targets import (
     CorrelationMatrix,
@@ -240,6 +241,20 @@ def test_protein_objective_averages_blocks_separately_and_excludes_diagonal() ->
     assert t.allclose(terms.cross_mse, expected_cross)
     assert t.allclose(terms.protein_pair_mse, expected_pair)
     assert t.allclose(terms.total, expected_cross + 2.0 * expected_pair)
+
+
+@pytest.mark.parametrize("protein_count", [2, 3, 8, 52])
+def test_unique_pair_mask_counts_symmetric_pair_once(protein_count: int) -> None:
+    mask = unique_unordered_pair_mask(protein_count)
+    assert mask.shape == (protein_count, protein_count)
+    assert int(mask.sum().item()) == protein_count * (protein_count - 1) // 2
+    assert not bool(t.any(mask & mask.mT).item())
+    assert not bool(t.any(t.diagonal(mask)).item())
+
+
+def test_unique_pair_mask_requires_two_proteins() -> None:
+    with pytest.raises(ValueError, match="at least two proteins"):
+        unique_unordered_pair_mask(1)
 
 
 def test_tss_windows_use_grch37_coordinates_and_plus_reference_strand() -> None:

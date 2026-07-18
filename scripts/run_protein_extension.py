@@ -29,6 +29,7 @@ from methylation_latent.protein_extension import (
     LinearProteinMapper,
     ProteinSplit,
     protein_objective,
+    unique_unordered_pair_mask,
 )
 from methylation_latent.storage import load_exact_safetensors, save_safetensors_exclusive
 
@@ -583,11 +584,13 @@ def _evaluate(
     pp_test_test_target = gram_target.index_select(0, test_proteins).index_select(
         1, test_proteins
     )
-    off_diagonal = ~t.eye(test_proteins.numel(), dtype=t.bool, device=protein_latent.device)
+    unique_pairs = unique_unordered_pair_mask(
+        test_proteins.numel(), device=protein_latent.device
+    )
     protein_pair_metrics = {
         "seen_heldout": _metric_record(pp_seen_test_target, pp_seen_test_prediction),
         "heldout_heldout_off_diagonal": _metric_record(
-            pp_test_test_target[off_diagonal], pp_test_test_prediction[off_diagonal]
+            pp_test_test_target[unique_pairs], pp_test_test_prediction[unique_pairs]
         ),
     }
     age_direction = normalize_vector_strict(parent_model.age_direction.detach())

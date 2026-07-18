@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import torch as t
 from beartype import beartype
-from jaxtyping import Float, Float64, Int64, jaxtyped
+from jaxtyping import Bool, Float, Float64, Int64, jaxtyped
 
 from methylation_latent.domain import NonNegativeWeight, ProbeLocus, WindowSize
 from methylation_latent.genome import GenomicInterval
@@ -24,11 +24,26 @@ ProteinFeatures = Float[t.Tensor, "proteins features"]
 ProbeLatentRows = Float[t.Tensor, "probes latent"]
 ProteinLatentRows = Float[t.Tensor, "proteins latent"]
 IndexVector = Int64[t.Tensor, "selected"]
+UniquePairMask = Bool[t.Tensor, "proteins proteins"]
 
 
 def _require_finite(values: t.Tensor, name: str) -> None:
     if not bool(t.isfinite(values).all().item()):
         raise ValueError(f"{name} must contain only finite values")
+
+
+@jaxtyped(typechecker=beartype)
+def unique_unordered_pair_mask(
+    protein_count: int, *, device: str | t.device = "cpu"
+) -> UniquePairMask:
+    """Select each unordered off-diagonal protein pair exactly once."""
+
+    if protein_count < 2:
+        raise ValueError("at least two proteins are required to form a pair")
+    return t.triu(
+        t.ones((protein_count, protein_count), dtype=t.bool, device=device),
+        diagonal=1,
+    )
 
 
 @dataclass(frozen=True, slots=True)
