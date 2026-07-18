@@ -263,7 +263,12 @@ def _load_gene_loci(
     return tuple(by_gene[gene] for gene in genes), tuple(ordered_hash_input)
 
 
-def _assert_s1_coordinates(path: Path, loci: tuple[GeneLocus, ...]) -> None:
+def _assert_s1_coordinates(
+    path: Path,
+    loci: tuple[GeneLocus, ...],
+    *,
+    interval_discrepancies: dict[str, object],
+) -> None:
     rows = _xlsx_rows(path)
     if rows.get(6, {}).get(3) != "HGNC Symbol" or rows.get(6, {}).get(4) != "Gene location (Build 37)":
         raise ValueError("biomarker supplement headers differ")
@@ -288,7 +293,23 @@ def _assert_s1_coordinates(path: Path, loci: tuple[GeneLocus, ...]) -> None:
         if match is None or passed != "Yes":
             raise ValueError(f"selected gene lacks passed-QC Build 37 coordinates: {locus.gene_symbol}")
         chromosome, start, end = match.groups()
-        if chromosome != locus.chromosome or max(int(start), locus.start) > min(int(end), locus.end):
+        overlaps = chromosome == locus.chromosome and max(int(start), locus.start) <= min(
+            int(end), locus.end
+        )
+        if locus.gene_symbol in interval_discrepancies:
+            expected = interval_discrepancies[locus.gene_symbol]
+            if expected != {
+                "paper_chromosome": chromosome,
+                "paper_start": int(start),
+                "paper_end": int(end),
+                "ensembl_id": "ENSG00000204305",
+                "ensembl_chromosome": locus.chromosome,
+                "ensembl_start": locus.start,
+                "ensembl_end": locus.end,
+                "resolution": "use_authoritative_ensembl_grch37",
+            } or overlaps:
+                raise ValueError("frozen paper/Ensembl interval discrepancy differs")
+        elif not overlaps:
             raise ValueError(f"Ensembl and biomarker-table gene intervals do not overlap: {locus.gene_symbol}")
 
 
@@ -466,7 +487,26 @@ def main() -> None:
         sources_config, "ensembl_lookup_set_sha256"
     ):
         raise ValueError("Ensembl GRCh37 lookup set fingerprint differs")
-    _assert_s1_coordinates(source_paths["biomarker_table"], loci)
+    discrepancies_raw = sequence_config.get("grch37_paper_interval_discrepancies")
+    expected_discrepancies: dict[str, object] = {
+        "AGER": {
+            "paper_chromosome": "6",
+            "paper_start": 32_156_417,
+            "paper_end": 32_159_773,
+            "ensembl_id": "ENSG00000204305",
+            "ensembl_chromosome": "6",
+            "ensembl_start": 32_148_745,
+            "ensembl_end": 32_152_101,
+            "resolution": "use_authoritative_ensembl_grch37",
+        }
+    }
+    if discrepancies_raw != expected_discrepancies:
+        raise ValueError("frozen paper/Ensembl interval discrepancy set differs")
+    _assert_s1_coordinates(
+        source_paths["biomarker_table"],
+        loci,
+        interval_discrepancies=expected_discrepancies,
+    )
 
     split = target_blind_protein_split(
         genes,
@@ -590,6 +630,9 @@ def main() -> None:
             ],
             "grch37_primary_placement_exceptions": cast(
                 dict[str, JsonValue], expected_placement
+            ),
+            "grch37_paper_interval_discrepancies": cast(
+                dict[str, JsonValue], expected_discrepancies
             ),
             "common_subject_count": len(common_gsms),
             "common_subject_order_sha256": sha256_ordered_strings(common_gsms),

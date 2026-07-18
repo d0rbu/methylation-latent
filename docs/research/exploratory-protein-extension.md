@@ -58,6 +58,12 @@ selected non-primary placement. The byte-pinned paper supplement gives the prima
 The protocol therefore pins that primary chr17 interval as the sole placement exception. All
 other loci must resolve directly to chromosomes 1–22, X, or Y.
 
+The source supplement's stated AGER interval (`chr6:32156417-32159773`) does not overlap official
+GRCh37 AGER (`ENSG00000204305`, `chr6:32148745-32152101`) and instead overlaps the neighboring
+PBX2 locus. This is pinned as the sole paper-interval discrepancy. TSS extraction uses the
+authoritative Ensembl GRCh37 AGER record; the paper coordinate is retained only in the audit
+ledger.
+
 ## Target-blind protein split and objective
 
 SHA-256 ordering of `seed:HGNC-symbol` fixes 36 training, 8 validation, and 8 test proteins without

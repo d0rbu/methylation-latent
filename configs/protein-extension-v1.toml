@@ -51,6 +51,7 @@ esm_pooling = "residue-count-weighted mean of non-overlapping chunk means"
 combined_preprocessing = "row-L2-normalize each fixed modality independently before concatenation"
 grch37_biotype_exceptions = { MMP12 = "processed_transcript" }
 grch37_primary_placement_exceptions = { PECAM1 = { ensembl_seq_region = "HG183_PATCH", chromosome = "17", start = 62396775, end = 62491136, strand = -1, source = "Ahsan2017_S1_biomarkers.xlsx" } }
+grch37_paper_interval_discrepancies = { AGER = { paper_chromosome = "6", paper_start = 32156417, paper_end = 32159773, ensembl_id = "ENSG00000204305", ensembl_chromosome = "6", ensembl_start = 32148745, ensembl_end = 32152101, resolution = "use_authoritative_ensembl_grch37" } }
 
 [training]
 representations = ["free", "shared_tss", "tss_linear", "amino_acid_linear", "combined_linear"]
