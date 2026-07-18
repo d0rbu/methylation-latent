@@ -1127,6 +1127,7 @@ def main() -> None:
     _configure_runtime()
     repository_root = Path(__file__).resolve().parents[1]
     code_git_commit = require_clean_git_commit(repository_root)
+    print("stage=verify_protocol_and_bundle", flush=True)
     analysis_protocol = load_latent_interpretation_protocol(arguments.analysis_config)
     primary_config = load_protocol_config(arguments.protocol_config)
     if (
@@ -1141,6 +1142,7 @@ def main() -> None:
         protocol_sha256=analysis_protocol.protocol_sha256,
     )
     probes = load_probe_table(arguments.data / "probes.tsv")
+    print("stage=join_gpl13534_annotations", flush=True)
     annotations, annotation_audit = load_manifest_interpretation_annotations(
         arguments.manifest,
         probes,
@@ -1153,6 +1155,7 @@ def main() -> None:
         probes=probes,
     )
     targets = load_target_geometry(arguments.data / "targets.safetensors")
+    print("stage=load_cohort", flush=True)
     cohort_metadata = _load_json(arguments.data / "cohort.json")
     if cohort_metadata.get("probe_ids") != [str(probe.probe_id) for probe in probes.probes]:
         raise ValueError("cohort probe order differs from the retained probe table")
@@ -1174,6 +1177,7 @@ def main() -> None:
     target_sha256 = sha256_file(arguments.data / "targets.safetensors")
     embeddings: dict[int, EmbeddingMatrix] = {}
     for window in analysis_protocol.windows:
+        print(f"stage=load_embedding_cache window={window}", flush=True)
         parent_hashes = {
             analysis_protocol.parent(split, window).embedding_manifest_sha256
             for split in analysis_protocol.splits
@@ -1195,6 +1199,7 @@ def main() -> None:
     reliability: dict[str, JsonValue] = {}
     window_comparisons: list[dict[str, JsonValue]] = []
     for split_offset, split_name in enumerate(analysis_protocol.splits):
+        print(f"stage=load_split_and_pairs split={split_name}", flush=True)
         split_tensor = arguments.data / "splits" / f"{split_name}.safetensors"
         split_metadata = arguments.data / "splits" / f"{split_name}.json"
         split = load_split_artifact(split_tensor, split_metadata, probes=probes)
@@ -1225,7 +1230,9 @@ def main() -> None:
             analysis_protocol,
             split_offset=split_offset,
         )
+        print(f"stage=reliability_complete split={split_name}", flush=True)
         for window in analysis_protocol.windows:
+            print(f"stage=interpret_cell split={split_name} window={window}", flush=True)
             runtimes[(split_name, window)] = _run_cell(
                 split_name,
                 window,
@@ -1246,6 +1253,8 @@ def main() -> None:
                 category_labels=category_labels,
                 numeric_categories=numeric_categories,
             )
+            print(f"stage=cell_complete split={split_name} window={window}", flush=True)
+        print(f"stage=compare_windows split={split_name}", flush=True)
         window_comparisons.append(
             _window_comparison(
                 runtimes[(split_name, 1024)],
@@ -1313,7 +1322,9 @@ def main() -> None:
         "window_comparisons": window_comparisons,
         "cross_split_weight_agreement": cross_split,
     }
+    print("stage=publish", flush=True)
     _publish(arguments.output, results, code_git_commit=code_git_commit)
+    print(f"stage=complete output={arguments.output}", flush=True)
 
 
 if __name__ == "__main__":
