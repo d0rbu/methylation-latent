@@ -70,3 +70,14 @@ the outcome-selected public protein panel audit, 52 unique HGNC/UniProt mappings
 complete-case expectation, GRCh37 Ensembl lookup bytes, Caduceus and ESM-2 checkpoints, target-blind
 protein split, representation sweep, separately averaged objective, and refit rule. Changing any
 of those choices requires a new protein protocol and output root.
+
+## Post-hoc dual probe latents
+
+`configs/dual-probe-latent-v1.toml` is another separate frozen protocol. It pins the four viewed
+parent experiment identities, train-only least-squares initialization, catch weight, alpha grid
+and schedules, three seeds, validation-only selection rule, refit partition, and selected-only
+test policy. It never changes protocol v2 or publishes test metrics for unselected alpha choices.
+The untruncated normal-matrix condition number is recorded explicitly. Directions below the
+configured condition floor are removed by a minimum-norm eigensolve; retained condition,
+effective rank, discarded spectral mass, discarded cross-moment fraction, and retained normal
+residual are all audited. Validation and test rows are forbidden inputs to that solve.

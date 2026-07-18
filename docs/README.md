@@ -22,6 +22,8 @@ GSE87571 IDATs; references to the unavailable GSE40279 primary run are historica
 - [`research/exploratory-protein-extension.md`](research/exploratory-protein-extension.md)
   — post-hoc protein anchors, sequence representations, unseen-protein split, and interpretation
   limits
+- [`research/exploratory-dual-probe-latent.md`](research/exploratory-dual-probe-latent.md)
+  — post-hoc train-only learned probe geometry with gradient-routed sequence catching
 
 ## Pipelines
 

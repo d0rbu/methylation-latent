@@ -6,6 +6,7 @@
 |---|---|
 | `configs/protocol-v2.toml` | Frozen scientific choices and immutable external identities |
 | `configs/protein-extension-v1.toml` | Separate frozen post-hoc protein protocol, source hashes, protein identities, split, representations, and objective |
+| `configs/dual-probe-latent-v1.toml` | Frozen post-hoc alpha/schedule sweep and train-only dual-latent contract |
 | `scripts/prepare_gse87571.py` | Build primary cohort, targets, features, and splits |
 | `scripts/seal_primary_data.py` | Recompute invariants and seal the 17-file data bundle |
 | `scripts/run_experiments.py` | Ordered sequence/pair/age/full/evaluate stages |
@@ -20,6 +21,8 @@
 | `scripts/embed_protein_amino_acids.py` | Pinned reviewed-UniProt to ESM-2 protein embedding cache without truncation |
 | `scripts/run_protein_extension.py` | Fit free, TSS, amino-acid, and combined protein anchors in frozen probe geometries |
 | `scripts/compile_protein_extension_report.py` | Add the immutable protein experiment page to an existing compiled interim site |
+| `scripts/run_dual_probe_latent.py` | Tune, select, refit, and evaluate the dual-probe latent experiment without test-driven alpha selection |
+| `scripts/compile_dual_probe_report.py` | Add the selected-only dual-probe results page to an existing compiled interim site |
 | `scripts/compile_results_site.py` | Compile validated evaluation records into static sites |
 | `results/` | Compact validated site-data artifacts after experiment completion |
 | `site-template/` | Split-specific result-page HTML, JavaScript, and CSS |
@@ -57,6 +60,7 @@
 | `tsne.py` | Deterministic exact Torch t-SNE and balanced metadata sampling |
 | `umap.py` | Exact Torch fuzzy-neighborhood UMAP with Euclidean or intrinsic spherical-geodesic inputs, planar or unit-two-sphere outputs, spectral initialization, distortion diagnostics, and full cross-entropy objectives |
 | `protein_extension.py` | Common-axis protein targets, target-blind protein split, hyperspherical maps, loss blocks, TSS intervals, and no-truncation chunking |
+| `dual_probe.py` | Learned probe table, OLS initialization audit, alpha schedules, routed catch loss, and dual-latent training |
 | `artifacts.py` | Canonical JSON and hashing |
 | `storage.py` | Strict safetensors persistence |
 | `site.py` | Site-data validation and static generation |

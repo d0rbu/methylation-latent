@@ -48,6 +48,11 @@ A finalized cache cannot accept another shard.
 | `protein-tss-embeddings.v1` | 52 GRCh37 TSS-centred hg19 plus-strand Caduceus embeddings for one frozen window; records every interval and centre base |
 | `protein-amino-acid-embeddings.v1` | 52 reviewed canonical UniProt sequences embedded by pinned ESM-2; all residues covered exactly once and long proteins never truncated |
 | `protein-extension-results.v1` | four frozen parent probe geometries by five protein representations, separate inductive populations, cis/trans and overlap audits, protein-pair metrics, age-edge diagnostics, and display-only scatters |
+| `dual-probe-tuning.v1` | validation-only alpha/schedule histories across three seeds, train-only OLS audits, and no test metrics |
+| `dual-probe-selection.v1` | immutable validation-only comparison of every alpha strategy and one selected strategy per split/window cell |
+| `dual-probe-refit.v1` | selected-strategy complete-train learned table, sequence map, age direction, global learned-row indices, and exact payload hashes |
+| `dual-probe-results.v1` | selected-only three-seed test evaluation with fully inductive and hybrid pair populations, age metrics, distance strata, and parent comparisons |
+| `dual-probe-manifest.v1` | hashes the four completed split/window result records for report compilation |
 
 ## Identity rules
 

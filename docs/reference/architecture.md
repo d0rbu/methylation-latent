@@ -50,6 +50,7 @@ GSE87571 IDATs + phenotype + GPL13534 + masks + hg19
 | `evaluation` | Pair populations, distance classes/reference, metrics, and PCA |
 | `evaluation_cache` | Immutable pair indices and exact target values |
 | `distance_integration` | Post-hoc PSD distance kernels and simplex-constrained mixtures |
+| `dual_probe` | Train-only free probe geometry, least-squares sequence initialization, and gradient-routed catch loss |
 | `artifacts` / `storage` | Canonical JSON, hashes, and exclusive safetensors |
 | `site` | Strict site-data schema and static HTML generation |
 | `config` / `cli` | Frozen protocol and thin public commands |
