@@ -24,6 +24,9 @@ GSE87571 IDATs; references to the unavailable GSE40279 primary run are historica
   limits
 - [`research/exploratory-dual-probe-latent.md`](research/exploratory-dual-probe-latent.md)
   — post-hoc train-only learned probe geometry with gradient-routed sequence catching
+- [`research/exploratory-latent-interpretation.md`](research/exploratory-latent-interpretation.md)
+  — post-hoc invariant weight geometry, target reliability, exact age decomposition, and
+  prediction-only candidate ranking
 
 ## Pipelines
 

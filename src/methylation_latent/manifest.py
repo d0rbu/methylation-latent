@@ -149,6 +149,13 @@ def _manifest_rows(path: Path) -> tuple[tuple[str, ...], Iterable[dict[str, str]
     return header, dictionaries()
 
 
+@beartype
+def iter_gpl13534_manifest_rows(path: Path) -> Iterable[dict[str, str]]:
+    """Iterate strict GPL13534 assay rows for downstream byte-pinned annotations."""
+
+    return _manifest_rows(path)[1]
+
+
 def _manifest_level_exclusion(row: dict[str, str]) -> ManifestExclusionReason | None:
     name = row["Name"]
     if name.startswith("rs"):

@@ -96,6 +96,7 @@ commit; they refuse to run when tracked or untracked files differ.
 | Results site and tunnel | [`docs/operations/results-site.md`](docs/operations/results-site.md) |
 | Post-hoc protein extension | [`docs/research/exploratory-protein-extension.md`](docs/research/exploratory-protein-extension.md) |
 | Post-hoc dual probe latents | [`docs/research/exploratory-dual-probe-latent.md`](docs/research/exploratory-dual-probe-latent.md) |
+| Post-hoc latent interpretation | [`docs/research/exploratory-latent-interpretation.md`](docs/research/exploratory-latent-interpretation.md) |
 
 ## License
 

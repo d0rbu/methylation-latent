@@ -7,6 +7,7 @@
 | `configs/protocol-v2.toml` | Frozen scientific choices and immutable external identities |
 | `configs/protein-extension-v1.toml` | Separate frozen post-hoc protein protocol, source hashes, protein identities, split, representations, and objective |
 | `configs/dual-probe-latent-v1.toml` | Frozen post-hoc alpha/schedule sweep and train-only dual-latent contract |
+| `configs/latent-interpretation-v1.toml` | Frozen post-hoc reliability, invariant-geometry, decomposition, and candidate-display contract |
 | `scripts/prepare_gse87571.py` | Build primary cohort, targets, features, and splits |
 | `scripts/seal_primary_data.py` | Recompute invariants and seal the 17-file data bundle |
 | `scripts/run_experiments.py` | Ordered sequence/pair/age/full/evaluate stages |
@@ -22,6 +23,7 @@
 | `scripts/run_protein_extension.py` | Fit free, TSS, amino-acid, and combined protein anchors in frozen probe geometries |
 | `scripts/compile_protein_extension_report.py` | Add the immutable protein experiment page to an existing compiled interim site |
 | `scripts/run_dual_probe_latent.py` | Tune, select, refit, and evaluate the dual-probe latent experiment without test-driven alpha selection |
+| `scripts/run_latent_interpretation.py` | Reconstruct final latents and run the frozen CPU-only reliability and interpretation analysis |
 | `scripts/compile_dual_probe_report.py` | Add the selected-only dual-probe results page to an existing compiled interim site |
 | `dual-probe-site-template/` | Static dual-probe alpha, generalization, scatter, distance, and audit report assets |
 | `scripts/compile_results_site.py` | Compile validated evaluation records into static sites |
@@ -62,6 +64,7 @@
 | `umap.py` | Exact Torch fuzzy-neighborhood UMAP with Euclidean or intrinsic spherical-geodesic inputs, planar or unit-two-sphere outputs, spectral initialization, distortion diagnostics, and full cross-entropy objectives |
 | `protein_extension.py` | Common-axis protein targets, target-blind protein split, hyperspherical maps, loss blocks, TSS intervals, and no-truncation chunking |
 | `dual_probe.py` | Learned probe table, OLS initialization audit, alpha schedules, routed catch loss, and dual-latent training |
+| `latent_interpretation.py` | Exact age decomposition, split-half reliability, invariant spectra, cross-window stability, and strict manifest annotations |
 | `artifacts.py` | Canonical JSON and hashing |
 | `storage.py` | Strict safetensors persistence |
 | `site.py` | Site-data validation and static generation |

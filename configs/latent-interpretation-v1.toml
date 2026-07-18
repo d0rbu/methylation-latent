@@ -1,0 +1,56 @@
+schema = "methylation-latent.latent-interpretation-config.v1"
+protocol_id = "gse87571-hg19-caduceus-ps-v2"
+protocol_sha256 = "4f62fcc8254519f84cbc9bbb016d8da4ed8c14e7b03bca9b93b8f090ff1a08a7"
+status = "post_hoc_hypothesis_generating"
+windows = [1024, 4096]
+splits = ["diverse-blocks", "held-out-chromosome"]
+
+[sources]
+gpl13534_sha256 = "df3d5009d9b5b878507ba330bbcd7d2012455f6d0aa92c2df897f53a28452c33"
+
+[reliability]
+subject_split_seeds = [940001, 940002, 940003, 940004, 940005, 940006, 940007, 940008, 940009, 940010, 940011, 940012, 940013, 940014, 940015, 940016]
+maximum_pairs_per_distance_class = 12500
+pair_sampling_seed = 941117
+
+[geometry]
+covariance_sample_size = 50000
+covariance_sampling_seed = 942119
+neighbour_sample_size = 2048
+neighbour_count = 25
+neighbour_sampling_seed = 943121
+
+[display]
+age_probe_count = 2000
+pairs_per_distance_class = 625
+sampling_seed = 944123
+candidate_ranks = [25, 50, 100, 250, 500]
+candidate_table_size = 25
+
+[[parents]]
+split = "diverse-blocks"
+window = 1024
+metadata_sha256 = "bfc2d6165ee1103737dfc494607694834cdddbe851fad53c3ba15b3e333e5fe8"
+model_sha256 = "0dd95b9c0f66fad1521dd0f5a15a83c79885a4df0a32703c01b7b1c70892791e"
+embedding_manifest_sha256 = "cf5ea47793aa5c8af9ed324dac8f8477113c278b48ad1bbfb9de8192e3bdc7df"
+
+[[parents]]
+split = "diverse-blocks"
+window = 4096
+metadata_sha256 = "d087ccaee345a5c55625ecd962204faf685bfeea01319671e693791b930fb1c0"
+model_sha256 = "e20c2b1c6f7aee00e24063cce511626f2f4a3e4998ac4b8215805d77047df2a9"
+embedding_manifest_sha256 = "5f75267cb710043641d40c9ac7592554ec7d71be48192dac6b7a0afc72cb9ed6"
+
+[[parents]]
+split = "held-out-chromosome"
+window = 1024
+metadata_sha256 = "e209243ab0e6464fe8ba0d9bc91d878407a6ae5b54e35fe9f9a505638223c4c9"
+model_sha256 = "a5edd1d2ba9e1f458c369cb591c311097f2ad76871157f82794e3101da964b6e"
+embedding_manifest_sha256 = "cf5ea47793aa5c8af9ed324dac8f8477113c278b48ad1bbfb9de8192e3bdc7df"
+
+[[parents]]
+split = "held-out-chromosome"
+window = 4096
+metadata_sha256 = "deb218c41c56f2a3705e8f9d4677646521a9c49890b647a0dc9213f72af52332"
+model_sha256 = "86a0d7c2dfa7fab67c4ad3907ae71ead2dcf23324b92babd496859f8f85fb319"
+embedding_manifest_sha256 = "5f75267cb710043641d40c9ac7592554ec7d71be48192dac6b7a0afc72cb9ed6"

@@ -46,6 +46,7 @@ GSE87571 IDATs + phenotype + GPL13534 + masks + hg19
 | `embedding_cache` | Restart-safe shard and finalized-cache contracts |
 | `batching` | Target-blind local genomic training batches |
 | `model` | Bias-free latent metric and independent age vector |
+| `latent_interpretation` | Post-hoc invariant geometry, subject-split reliability, exact age decomposition, and strict GPL13534 annotation joins |
 | `training` | Validation-selected age-only/full tuning and refit |
 | `evaluation` | Pair populations, distance classes/reference, metrics, and PCA |
 | `evaluation_cache` | Immutable pair indices and exact target values |
