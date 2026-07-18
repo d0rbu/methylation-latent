@@ -27,13 +27,19 @@
         <p id="adjustment-warning"></p>
       </section>
       <section>
+        <p class="section-label exploratory-label">Result summary</p>
+        <h2>Bottom line: weak rank signal, no calibrated unseen-protein predictor</h2>
+        <div id="findings" class="finding-list"></div>
+      </section>
+      <section>
         <p class="section-label exploratory-label">Frozen parent geometry · new post-hoc targets</p>
         <h2>What generalized to unseen proteins?</h2>
         <div id="headline" class="summary-grid"></div>
-        <p>The strongest claim is the <strong>held-out CpG × held-out protein</strong> result:
+        <p>The strongest claim available here is the <strong>held-out CpG × held-out protein</strong> result:
           neither the genomic probe nor the protein entered map fitting. Every displayed CpG–protein
-          metric excludes pairs whose input windows overlap. The free-vector row is transductive and
-          is shown only as an upper bound.</p>
+          metric excludes pairs whose input windows overlap. The free-vector row was directly fit to
+          all 52 protein target profiles and protein–protein correlations, including the eight test
+          proteins. It is a transductive capacity reference, not an upper bound or a protein-generalization result.</p>
         <div class="table-wrap"><table id="metrics-table"></table></div>
       </section>
       <section>
@@ -48,7 +54,8 @@
         <p class="section-label exploratory-label">Cis/trans and overlap audit</p>
         <h2>Does proximity explain the result?</h2>
         <p>“Cis” means the CpG and protein-coding gene share a chromosome; “trans” means they do not.
-          Overlapping input windows are removed rather than treated as easy examples.</p>
+          Overlapping input windows are removed rather than treated as easy examples. Held-out ×
+          held-out protein metrics contain 28 unique unordered pairs, not 56 duplicated symmetric entries.</p>
         <div id="strata-table" class="table-wrap"></div>
       </section>
       <section>

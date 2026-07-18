@@ -1,5 +1,5 @@
 const labels = {
-  free: "Free vectors (transductive upper bound)",
+  free: "Free vectors (transductive reference)",
   shared_tss: "TSS Caduceus → frozen probe W",
   tss_linear: "TSS Caduceus → learned linear map",
   amino_acid_linear: "ESM-2 amino acid → learned linear map",
@@ -11,14 +11,22 @@ const labels = {
 const fmt = value => Number.isFinite(Number(value)) ? Number(value).toFixed(4) : "—";
 const experimentLabel = record => `${labels[record.split]} · ${record.window_size / 1024} kb · ${labels[record.representation]}`;
 const strongest = record => record.evaluation.cross_populations.heldout_cpg_heldout_protein.all_overlap_safe;
+const range = values => `${fmt(Math.min(...values))} to ${fmt(Math.max(...values))}`;
+const meanBaselineMse = metric => Number(metric.target_standard_deviation) ** 2;
 
 const assertData = data => {
   if (data.schema !== "methylation-latent.protein-extension-results.v1") throw new Error("Protein result schema differs");
+  if (data.scientific_status !== "post_hoc_hypothesis_generating") throw new Error("Scientific-status warning differs");
   if (!Array.isArray(data.records) || data.records.length !== 20) throw new Error("Expected exactly 20 protein experiment records");
   if (!Array.isArray(data.protein_names) || data.protein_names.length !== 52) throw new Error("Protein axis differs");
+  const identities = new Set();
   data.records.forEach(record => {
     if (!strongest(record).defined || strongest(record).count < 2) throw new Error("Strongest evaluation metric is undefined");
+    if (record.evaluation.protein_generalization_valid !== (record.representation !== "free")) throw new Error("Protein generalization flag contradicts representation");
+    if (record.evaluation.protein_pair_metrics.heldout_heldout_off_diagonal.count !== 28) throw new Error("Held-out protein pairs are not unique unordered pairs");
+    identities.add(`${record.split}|${record.window_size}|${record.representation}`);
   });
+  if (identities.size !== 20) throw new Error("Experiment identities are duplicated");
 };
 
 const element = (name, text = "") => {
@@ -33,6 +41,41 @@ const summaryCard = (title, value, detail) => {
   return card;
 };
 
+const finding = (title, body) => {
+  const node = element("article"); node.className = "finding";
+  node.append(element("strong", title), element("p", body));
+  return node;
+};
+
+const renderFindings = data => {
+  const valid = data.records.filter(record => record.evaluation.protein_generalization_valid);
+  const learned = valid.filter(record => ["tss_linear", "amino_acid_linear", "combined_linear"].includes(record.representation));
+  const best = [...valid].sort((a, b) => strongest(b).pearson - strongest(a).pearson)[0];
+  const tss = data.records.filter(record => record.representation === "tss_linear");
+  const combined = data.records.filter(record => record.representation === "combined_linear");
+  const amino = data.records.filter(record => record.representation === "amino_acid_linear");
+  const knownProtein = [...learned].sort((a, b) =>
+    b.evaluation.cross_populations.heldout_cpg_seen_protein.all_overlap_safe.pearson
+    - a.evaluation.cross_populations.heldout_cpg_seen_protein.all_overlap_safe.pearson)[0];
+  const tssProteinPairs = tss.map(record => record.evaluation.protein_pair_metrics.heldout_heldout_off_diagonal);
+  const aminoSeenPairs = amino.map(record => record.evaluation.protein_pair_metrics.seen_heldout.pearson);
+  const aminoHeldoutPairs = amino.map(record => record.evaluation.protein_pair_metrics.heldout_heldout_off_diagonal.pearson);
+  const ageProfile = learned.map(record => record.evaluation.age_edge_summary.heldout_protein_model_cosine_vs_profile_concordance_pearson);
+  const node = document.querySelector("#findings");
+  node.append(
+    finding("The double-held-out effect is small and uncalibrated.",
+      `The best valid held-out CpG × held-out protein result was ${experimentLabel(best)}: Pearson ${fmt(strongest(best).pearson)}, MSE ${fmt(strongest(best).mse)} versus mean-only MSE ${fmt(meanBaselineMse(strongest(best)))}, and R² ${fmt(strongest(best).r_squared)}. Every valid sequence-derived record had negative R².`),
+    finding("Gene-locus DNA carries a weak, repeatable ranking signal.",
+      `The learned TSS map was positive in all four frozen geometries (Pearson ${range(tss.map(record => strongest(record).pearson))}); the combined TSS + amino-acid map was also positive but small (${range(combined.map(record => strongest(record).pearson))}). Neither was calibrated well enough to beat the mean-only baseline.`),
+    finding("Placing a new CpG relative to already grounded proteins is easier.",
+      `The best held-out CpG × seen-protein Pearson was ${fmt(knownProtein.evaluation.cross_populations.heldout_cpg_seen_protein.all_overlap_safe.pearson)} for ${experimentLabel(knownProtein)}, compared with ${fmt(strongest(best).pearson)} for the best double-held-out result.`),
+    finding("Protein–protein evidence depends on which side is new.",
+      `For 28 unique held-out × held-out protein pairs, TSS-map Pearson ranged ${range(tssProteinPairs.map(metric => metric.pearson))}, but every corresponding R² was negative. Amino-acid embeddings reached ${range(aminoSeenPairs)} for seen × held-out protein pairs yet only ${range(aminoHeldoutPairs)} when both proteins were unseen.`),
+    finding("This release cannot establish a protein–aging relationship.",
+      `Only eight proteins are held out, and their released measurements were adjusted for age. Across learned sequence maps, cosine-to-age versus methylation-profile age concordance ranged ${range(ageProfile)}, with changing sign. Those edges remain model imputations, not observed protein–age correlations.`),
+  );
+};
+
 const renderHeadline = data => {
   const inductive = data.records.filter(record => record.evaluation.protein_generalization_valid);
   const best = [...inductive].sort((a, b) => strongest(a).mse - strongest(b).mse)[0];
@@ -43,7 +86,7 @@ const renderHeadline = data => {
   node.append(
     summaryCard("Best inductive held-out MSE", fmt(strongest(best).mse), experimentLabel(best)),
     summaryCard("Best inductive held-out Pearson", fmt(strongest(bestCorrelation).pearson), experimentLabel(bestCorrelation)),
-    summaryCard("Free-vector upper-bound MSE", fmt(strongest(free).mse), experimentLabel(free)),
+    summaryCard("Free-vector transductive MSE", fmt(strongest(free).mse), experimentLabel(free)),
     summaryCard("Largest |direct protein–age ρ|", fmt(best.evaluation.age_edge_summary.maximum_absolute_direct_residualized_protein_age_correlation), "Expected to be small after source-study age adjustment"),
   );
 };
@@ -51,7 +94,7 @@ const renderHeadline = data => {
 const renderMetricsTable = data => {
   const table = document.querySelector("#metrics-table");
   const head = element("thead"); const header = element("tr");
-  ["Split/window", "Representation", "d", "step", "HH MSE", "HH Pearson", "HH R²", "held-out CpG × seen protein MSE", "protein HH Pearson"]
+  ["Split/window", "Representation", "d", "step", "HH MSE", "HH mean-only MSE", "HH Pearson", "HH R²", "held-out CpG × seen protein MSE", "protein HH Pearson"]
     .forEach(value => header.append(element("th", value)));
   head.append(header); table.append(head);
   const body = element("tbody");
@@ -63,7 +106,7 @@ const renderMetricsTable = data => {
     const proteinHH = record.evaluation.protein_pair_metrics.heldout_heldout_off_diagonal;
     [
       `${labels[record.split]} · ${record.window_size / 1024} kb`, labels[record.representation],
-      record.latent_dimension, record.selected_step, fmt(strong.mse), fmt(strong.pearson),
+      record.latent_dimension, record.selected_step, fmt(strong.mse), fmt(meanBaselineMse(strong)), fmt(strong.pearson),
       fmt(strong.r_squared), fmt(heldSeen.mse), fmt(proteinHH.pearson),
     ].forEach(value => row.append(element("td", String(value))));
     body.append(row);
@@ -170,7 +213,7 @@ fetch("protein-extension-data.json", {cache: "no-store"}).then(response => {
     `Git commit: ${data.git_commit}`,
     `Device recorded by run: ${data.device}`,
   ].forEach(value => provenance.append(element("li", value)));
-  renderHeadline(data); renderMetricsTable(data); renderCorrelationScatter(data); renderAge(data);
+  renderFindings(data); renderHeadline(data); renderMetricsTable(data); renderCorrelationScatter(data); renderAge(data);
 }).catch(error => {
   document.querySelector("#status").textContent = `Report failed loudly: ${error.message}`;
   throw error;

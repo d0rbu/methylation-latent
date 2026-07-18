@@ -13,6 +13,13 @@
 }
 
 .summary-card strong { display: block; font-size: 1.6rem; margin: .35rem 0; }
+.finding-list { display: grid; gap: .85rem; margin: 1.25rem 0; }
+.finding {
+  border-left: 4px solid #006b57;
+  padding: .2rem 0 .2rem 1rem;
+}
+.finding strong { display: block; margin-bottom: .25rem; }
+.finding p { margin: 0; }
 .table-wrap { overflow-x: auto; margin: 1rem 0; }
 table { border-collapse: collapse; width: 100%; font-size: .88rem; }
 th, td { border-bottom: 1px solid #d8e0db; padding: .55rem .65rem; text-align: right; }
