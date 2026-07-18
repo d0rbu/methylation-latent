@@ -64,9 +64,9 @@ const renderFindings = data => {
   const node = document.querySelector("#findings");
   node.append(
     finding("The double-held-out effect is small and uncalibrated.",
-      `The best valid held-out CpG × held-out protein result was ${experimentLabel(best)}: Pearson ${fmt(strongest(best).pearson)}, MSE ${fmt(strongest(best).mse)} versus mean-only MSE ${fmt(meanBaselineMse(strongest(best)))}, and R² ${fmt(strongest(best).r_squared)}. Every valid sequence-derived record had negative R².`),
+      `The best valid held-out CpG × held-out protein result was ${experimentLabel(best)}: Pearson ${fmt(strongest(best).pearson)}, MSE ${fmt(strongest(best).mse)} versus evaluation-mean MSE ${fmt(meanBaselineMse(strongest(best)))}, and R² ${fmt(strongest(best).r_squared)}. Every valid sequence-derived record had negative R².`),
     finding("Gene-locus DNA carries a weak, repeatable ranking signal.",
-      `The learned TSS map was positive in all four frozen geometries (Pearson ${range(tss.map(record => strongest(record).pearson))}); the combined TSS + amino-acid map was also positive but small (${range(combined.map(record => strongest(record).pearson))}). Neither was calibrated well enough to beat the mean-only baseline.`),
+      `The learned TSS map was positive in all four frozen geometries (Pearson ${range(tss.map(record => strongest(record).pearson))}); the combined TSS + amino-acid map was also positive but small (${range(combined.map(record => strongest(record).pearson))}). Neither was calibrated well enough to beat the evaluation-mean baseline.`),
     finding("Placing a new CpG relative to already grounded proteins is easier.",
       `The best held-out CpG × seen-protein Pearson was ${fmt(knownProtein.evaluation.cross_populations.heldout_cpg_seen_protein.all_overlap_safe.pearson)} for ${experimentLabel(knownProtein)}, compared with ${fmt(strongest(best).pearson)} for the best double-held-out result.`),
     finding("Protein–protein evidence depends on which side is new.",
@@ -94,7 +94,7 @@ const renderHeadline = data => {
 const renderMetricsTable = data => {
   const table = document.querySelector("#metrics-table");
   const head = element("thead"); const header = element("tr");
-  ["Split/window", "Representation", "d", "step", "HH MSE", "HH mean-only MSE", "HH Pearson", "HH R²", "held-out CpG × seen protein MSE", "protein HH Pearson"]
+  ["Split/window", "Representation", "d", "step", "HH MSE", "HH evaluation-mean MSE", "HH Pearson", "HH R²", "held-out CpG × seen protein MSE", "protein HH Pearson"]
     .forEach(value => header.append(element("th", value)));
   head.append(header); table.append(head);
   const body = element("tbody");
