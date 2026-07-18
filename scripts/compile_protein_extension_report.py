@@ -103,13 +103,22 @@ def main() -> None:
     shutil.copyfile(arguments.results, arguments.output / "protein-extension-data.json")
     index_path = arguments.output / "index.html"
     index = index_path.read_text(encoding="utf-8")
-    anchor = '        <a href="../held-out-chromosome/">Held-out chromosome 7</a>\n'
+    anchor = (
+        '        <a href="held-out-chromosome/">\n'
+        "          <strong>Held-out chromosome 7</strong>\n"
+        "          <span>The stricter chromosome-level generalization split</span>\n"
+        "        </a>\n"
+    )
     if index.count(anchor) != 1:
         raise ValueError("compiled interim index navigation anchor differs")
     index_path.write_text(
         index.replace(
             anchor,
-            anchor + '        <a href="protein-extension.html">Protein extension</a>\n',
+            anchor
+            + '        <a href="protein-extension.html">\n'
+            + "          <strong>Post-hoc protein extension</strong>\n"
+            + "          <span>Protein anchors from gene-locus DNA and amino-acid sequence</span>\n"
+            + "        </a>\n",
         ),
         encoding="utf-8",
         newline="",
