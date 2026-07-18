@@ -39,7 +39,8 @@ from methylation_latent.targets import (
 
 _NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _CELL = re.compile(r"^([A-Z]+)[0-9]+$", flags=re.ASCII)
-_FASTA_ACCESSION = re.compile(r"^>sp\|([^|]+)\|.*(?:^| )GN=([^ ]+)(?: |$)")
+_FASTA_ACCESSION = re.compile(r"^>sp\|([^|]+)\|")
+_FASTA_GENE = re.compile(r"(?:^| )GN=([^ ]+)(?: |$)")
 _AMINO_ACIDS = frozenset("ACDEFGHIKLMNPQRSTVWY")
 
 
@@ -166,21 +167,23 @@ def _published_selection_audit(
     }
 
 
-def _parse_uniprot(path: Path) -> dict[str, tuple[str, str]]:
-    records: dict[str, tuple[str, str]] = {}
+def _parse_uniprot(path: Path) -> dict[str, tuple[str | None, str]]:
+    records: dict[str, tuple[str | None, str]] = {}
     header: str | None = None
     pieces: list[str] = []
 
     def finish() -> None:
         if header is None:
             return
-        match = _FASTA_ACCESSION.search(header)
-        if match is None:
-            raise ValueError(f"reviewed UniProt FASTA header lacks accession or GN: {header}")
-        accession, gene = match.groups()
+        accession_match = _FASTA_ACCESSION.search(header)
+        if accession_match is None:
+            raise ValueError(f"reviewed UniProt FASTA header lacks an accession: {header}")
+        accession = accession_match.group(1)
+        gene_match = _FASTA_GENE.search(header)
+        gene = None if gene_match is None else gene_match.group(1)
         sequence = "".join(pieces)
-        if not sequence or set(sequence) - _AMINO_ACIDS:
-            raise ValueError(f"UniProt sequence contains unsupported residues: {accession}")
+        if not sequence or not sequence.isalpha() or not sequence.isupper():
+            raise ValueError(f"UniProt sequence is empty or non-alphabetic: {accession}")
         if accession in records:
             raise ValueError(f"duplicate UniProt accession: {accession}")
         records[accession] = (gene, sequence)
@@ -395,6 +398,8 @@ def main() -> None:
             raise ValueError(
                 f"UniProt gene mapping differs: accession={accession}, expected={gene}, observed={observed_gene}"
             )
+        if set(sequence) - _AMINO_ACIDS:
+            raise ValueError(f"selected UniProt sequence contains unsupported residues: {accession}")
         sequences.append(sequence)
 
     loci, ensembl_hash_input = _load_gene_loci(
