@@ -267,21 +267,23 @@ def _assert_s1_coordinates(path: Path, loci: tuple[GeneLocus, ...]) -> None:
     rows = _xlsx_rows(path)
     if rows.get(6, {}).get(3) != "HGNC Symbol" or rows.get(6, {}).get(4) != "Gene location (Build 37)":
         raise ValueError("biomarker supplement headers differ")
-    by_gene: dict[str, tuple[str, str]] = {}
+    by_gene: dict[str, list[tuple[str, str]]] = {}
     for number, row in rows.items():
         if number < 7 or not row.get(3, "").strip():
             continue
         gene = row[3].strip()
-        if gene in by_gene:
-            raise ValueError(f"biomarker supplement contains duplicate gene symbol: {gene}")
         if row.get(5) not in {"Yes", "No"}:
             raise ValueError(f"biomarker QC flag differs for {gene}")
-        by_gene[gene] = (row.get(4, ""), row[5])
+        by_gene.setdefault(gene, []).append((row.get(4, ""), row[5]))
     coordinate_pattern = re.compile(r"^chr([^:]+):([0-9]+)-([0-9]+)$")
     for locus in loci:
-        if locus.gene_symbol not in by_gene:
-            raise ValueError(f"selected gene is absent from biomarker supplement: {locus.gene_symbol}")
-        coordinate, passed = by_gene[locus.gene_symbol]
+        records = by_gene.get(locus.gene_symbol, [])
+        if len(records) != 1:
+            raise ValueError(
+                "selected gene must have exactly one biomarker supplement record: "
+                f"gene={locus.gene_symbol}, count={len(records)}"
+            )
+        coordinate, passed = records[0]
         match = coordinate_pattern.fullmatch(coordinate)
         if match is None or passed != "Yes":
             raise ValueError(f"selected gene lacks passed-QC Build 37 coordinates: {locus.gene_symbol}")
