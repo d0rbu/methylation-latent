@@ -208,7 +208,13 @@ def _parse_uniprot(path: Path) -> dict[str, tuple[str | None, str]]:
 def _load_gene_loci(
     directory: Path,
     genes: tuple[str, ...],
+    *,
+    biotype_exceptions: dict[str, str],
 ) -> tuple[tuple[GeneLocus, ...], tuple[str, ...]]:
+    if not set(biotype_exceptions) <= set(genes) or any(
+        not gene or not biotype for gene, biotype in biotype_exceptions.items()
+    ):
+        raise ValueError("GRCh37 biotype exceptions must name configured genes and biotypes")
     loci: list[GeneLocus] = []
     ordered_hash_input: list[str] = []
     for gene in sorted(genes):
@@ -236,7 +242,7 @@ def _load_gene_loci(
             raise ValueError(f"Ensembl lookup envelope differs: {path}")
         if (
             raw["assembly_name"] != "GRCh37"
-            or raw["biotype"] != "protein_coding"
+            or raw["biotype"] != biotype_exceptions.get(gene, "protein_coding")
             or raw["object_type"] != "Gene"
             or raw["display_name"] != gene
             or not isinstance(raw["canonical_transcript"], str)
@@ -405,8 +411,15 @@ def main() -> None:
             raise ValueError(f"selected UniProt sequence contains unsupported residues: {accession}")
         sequences.append(sequence)
 
+    exceptions_raw = sequence_config.get("grch37_biotype_exceptions")
+    if not isinstance(exceptions_raw, dict) or exceptions_raw != {
+        "MMP12": "processed_transcript"
+    }:
+        raise ValueError("frozen GRCh37 biotype exception set differs")
     loci, ensembl_hash_input = _load_gene_loci(
-        arguments.sources / "ensembl-grch37-protein-genes", genes
+        arguments.sources / "ensembl-grch37-protein-genes",
+        genes,
+        biotype_exceptions=cast(dict[str, str], exceptions_raw),
     )
     if sha256_ordered_strings(ensembl_hash_input) != _string(
         sources_config, "ensembl_lookup_set_sha256"

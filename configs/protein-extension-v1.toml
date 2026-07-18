@@ -49,6 +49,7 @@ esm_embedding_width = 320
 esm_maximum_residues = 1022
 esm_pooling = "residue-count-weighted mean of non-overlapping chunk means"
 combined_preprocessing = "row-L2-normalize each fixed modality independently before concatenation"
+grch37_biotype_exceptions = { MMP12 = "processed_transcript" }
 
 [training]
 representations = ["free", "shared_tss", "tss_linear", "amino_acid_linear", "combined_linear"]

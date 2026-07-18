@@ -47,6 +47,11 @@ are capped at 1,022 residues per chunk; longer sequences are partitioned into no
 chunks, every residue is embedded exactly once, and residue embeddings are averaged with exact
 residue-count weighting. Silent truncation is forbidden.
 
+Ensembl GRCh37 labels 51 selected genes `protein_coding`. Its MMP12 record is the single pinned
+exception (`processed_transcript`); that record still has the exact MMP12 HGNC display name, a
+canonical ENST transcript, a reviewed MMP12 UniProt sequence, and an interval overlapping the
+source paper's Build-37 MMP12 interval. Any additional biotype exception is an error.
+
 ## Target-blind protein split and objective
 
 SHA-256 ordering of `seed:HGNC-symbol` fixes 36 training, 8 validation, and 8 test proteins without
