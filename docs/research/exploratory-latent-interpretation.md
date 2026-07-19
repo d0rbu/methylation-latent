@@ -1,14 +1,15 @@
 # Post-hoc latent interpretation
 
-This analysis asks what can be learned from the already fitted 1 kb and 4 kb full-model weights
-and probe representations. It was designed after the primary test results were viewed. Every
-result is therefore exploratory and hypothesis-generating; it cannot revise protocol v2 or turn
-the single GSE87571 cohort into independent biological replication.
+This analysis asks what can be learned from the already fitted 1 kb, 4 kb, and 16 kb full-model
+weights and probe representations. It was designed after the primary test results were viewed.
+Every result is therefore exploratory and hypothesis-generating; it cannot revise protocol v2 or
+turn the single GSE87571 cohort into independent biological replication.
 
-The frozen choices and exact parent hashes are recorded in
-`configs/latent-interpretation-v1.toml`. The analysis never invokes Caduceus and never changes a
-model. It reconstructs probe latents deterministically from the immutable embedding caches and
-final `W`/age checkpoints.
+The original two-window artifact and `configs/latent-interpretation-v1.toml` remain immutable. The
+three-window extension is separately frozen in `configs/latent-interpretation-v2.toml`, including
+all six exact parent-model and embedding-cache identities. The analysis never invokes Caduceus and
+never changes a model. It reconstructs probe latents deterministically from the immutable
+embedding caches and final `W`/age checkpoints.
 
 ## Identifiable geometry
 
@@ -70,10 +71,11 @@ replicates.
 
 ## Window and representation stability
 
-At identical held-out loci, compare 1 kb and 4 kb age predictions, pair predictions, linear CKA,
-and top-25 hyperspherical neighbours. Weight spectra, actual latent covariance spectra, and
-pre-normalization norms are reported. A target-blind sample is used when an all-probe operation
-would require a quadratic matrix.
+At identical held-out loci, compare every ordered window pair `(1 kb, 4 kb)`, `(1 kb, 16 kb)`, and
+`(4 kb, 16 kb)` for age predictions, pair predictions, linear CKA, and top-25 hyperspherical
+neighbours. Weight spectra, actual latent covariance spectra, and pre-normalization norms are
+reported. A target-blind sample is used when an all-probe operation would require a quadratic
+matrix.
 
 Linear surrogates fitted on the registered target-blind 50,000-probe primary-training sample
 measure how much held-out model output and empirical age association are explained by:
@@ -92,8 +94,10 @@ GPL13534 v1.1 annotations are accepted only at the byte-pinned source hash. Ever
 must join exactly once with identical probe ID, build 37 chromosome, and one-based `MAPINFO`.
 Candidate rankings use model predictions only:
 
-- age candidates require matching 1 kb/4 kb signs and rank by the smaller absolute prediction;
-- pair candidates require matching signs and rank by the smaller absolute pair prediction;
+- age candidates require a common sign across all three windows and rank by the smallest absolute
+  prediction;
+- pair candidates require a common sign across all three windows and rank by the smallest absolute
+  pair prediction;
 - empirical values are revealed only after ranking.
 
 RefGene names/groups, enhancer, regulatory-feature, and DHS annotations are displayed as context.

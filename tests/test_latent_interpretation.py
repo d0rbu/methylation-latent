@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 import torch as t
@@ -9,6 +10,7 @@ from jaxtyping import TypeCheckError
 
 import methylation_latent.latent_interpretation as interpretation
 import methylation_latent.latent_interpretation_protocol as interpretation_protocol
+import scripts.compile_latent_interpretation_report as interpretation_report
 from methylation_latent.artifacts import sha256_file
 from methylation_latent.domain import (
     GenomicContext,
@@ -25,6 +27,7 @@ from methylation_latent.latent_interpretation import (
     PairDecomposition,
     age_stratified_half_indices,
     deterministic_indices,
+    deterministic_window_pairs,
     exact_pair_decomposition,
     fit_linear_surrogate,
     gather_pair_products,
@@ -56,6 +59,7 @@ def test_frozen_interpretation_protocol_loads() -> None:
         root / "configs" / "latent-interpretation-v1.toml"
     )
     assert protocol.windows == (1024, 4096)
+    assert protocol.artifact_version == 1
     assert protocol.splits == ("diverse-blocks", "held-out-chromosome")
     assert protocol.parent("held-out-chromosome", 4096).model_sha256.startswith("86a0")
 
@@ -143,8 +147,17 @@ def test_spectrum_and_correlation_helpers_fail_loudly() -> None:
 def test_prediction_only_candidate_ranking_and_deterministic_sample() -> None:
     first = t.tensor((0.7, 0.5, -0.8, -0.3, 0.2), dtype=t.float64)
     second = t.tensor((0.6, 0.9, -0.4, -0.7, -0.1), dtype=t.float64)
-    assert stable_extreme_indices(first, second, positive=True, maximum=2).tolist() == [0, 1]
-    assert stable_extreme_indices(first, second, positive=False, maximum=2).tolist() == [2, 3]
+    third = t.tensor((0.8, 0.4, -0.9, -0.2, 0.3), dtype=t.float64)
+    assert stable_extreme_indices(first, second, third, positive=True, maximum=2).tolist() == [0, 1]
+    assert stable_extreme_indices(first, second, third, positive=False, maximum=2).tolist() == [
+        2,
+        3,
+    ]
+    assert deterministic_window_pairs((1024, 4096, 16384)) == (
+        (1024, 4096),
+        (1024, 16384),
+        (4096, 16384),
+    )
     sample = deterministic_indices(100, 10, seed=47)
     assert sample.numel() == 10
     assert t.equal(sample, t.unique(sample, sorted=True))
@@ -370,8 +383,14 @@ def test_deterministic_ranking_and_surrogate_failure_contracts() -> None:
     with pytest.raises(ValueError, match="positive"):
         deterministic_indices(0, 2, seed=1)
     assert t.equal(deterministic_indices(2, 3, seed=1), t.arange(2))
+    with pytest.raises(ValueError, match="unique increasing positive"):
+        deterministic_window_pairs((4096, 1024))
     with pytest.raises(ValueError, match="predictions or maximum"):
         stable_extreme_indices(t.ones(2), t.ones(3), positive=True, maximum=1)
+    with pytest.raises(ValueError, match="predictions or maximum"):
+        stable_extreme_indices(
+            t.ones(2), t.ones(2), t.ones(2, dtype=t.float64), positive=True, maximum=1
+        )
     with pytest.raises(ValueError, match="not enough"):
         stable_extreme_indices(t.ones(2), -t.ones(2), positive=True, maximum=1)
     features = t.tensor(((1.0, 0.0), (1.0, 1.0), (1.0, 2.0)), dtype=t.float64)
@@ -479,6 +498,129 @@ def test_interpretation_protocol_helpers_and_dataclasses_reject_drift() -> None:
         InterpretationParent("bad", 1024, sha, sha, sha)
     with pytest.raises(ValueError, match="hashes"):
         InterpretationParent("diverse-blocks", 1024, "bad", sha, sha)
+
+
+def _v2_interpretation_config_text() -> str:
+    source = Path("configs/latent-interpretation-v1.toml").read_text(encoding="utf-8")
+    source = source.replace(
+        'schema = "methylation-latent.latent-interpretation-config.v1"',
+        'schema = "methylation-latent.latent-interpretation-config.v2"',
+    ).replace("windows = [1024, 4096]", "windows = [1024, 4096, 16384]")
+    held_out_marker = '\n[[parents]]\nsplit = "held-out-chromosome"\nwindow = 1024\n'
+    assert source.count(held_out_marker) == 1
+    diverse_parent = (
+        '\n[[parents]]\nsplit = "diverse-blocks"\nwindow = 16384\n'
+        f'metadata_sha256 = "{"1" * 64}"\n'
+        f'model_sha256 = "{"2" * 64}"\n'
+        f'embedding_manifest_sha256 = "{"3" * 64}"\n'
+    )
+    held_out_parent = (
+        '\n[[parents]]\nsplit = "held-out-chromosome"\nwindow = 16384\n'
+        f'metadata_sha256 = "{"4" * 64}"\n'
+        f'model_sha256 = "{"5" * 64}"\n'
+        f'embedding_manifest_sha256 = "{"3" * 64}"\n'
+    )
+    return source.replace(held_out_marker, diverse_parent + held_out_marker) + held_out_parent
+
+
+def test_v2_interpretation_protocol_requires_the_exact_six_parent_grid(tmp_path: Path) -> None:
+    path = tmp_path / "v2.toml"
+    path.write_text(_v2_interpretation_config_text(), encoding="utf-8")
+    protocol = load_latent_interpretation_protocol(path)
+    assert protocol.artifact_version == 2
+    assert protocol.windows == (1024, 4096, 16384)
+    assert len(protocol.parents) == 6
+    assert protocol.parent("diverse-blocks", 16384).model_sha256 == "2" * 64
+    assert deterministic_window_pairs(protocol.windows) == (
+        (1024, 4096),
+        (1024, 16384),
+        (4096, 16384),
+    )
+
+    missing_parent = tmp_path / "missing-parent.toml"
+    missing_parent.write_text(
+        _v2_interpretation_config_text().rsplit("[[parents]]", maxsplit=1)[0],
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="frozen split/window grid"):
+        load_latent_interpretation_protocol(missing_parent)
+
+
+def test_v2_report_compiler_requires_all_window_pairs_and_dynamic_display_axes(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "v2.toml"
+    config.write_text(_v2_interpretation_config_text(), encoding="utf-8")
+    protocol = load_latent_interpretation_protocol(config)
+    prediction = {str(window): 0.1 for window in protocol.windows}
+    pair_predictions = {
+        str(window): {component: [0.1, 0.2] for component in interpretation_report._COMPONENTS}
+        for window in protocol.windows
+    }
+    agreement = {
+        population: {
+            "total_prediction_pearson": 0.5,
+            "age_component_prediction_pearson": 0.4,
+            "residual_prediction_pearson": 0.3,
+        }
+        for population in interpretation_report._POPULATIONS
+    }
+
+    def split_record(split: str) -> dict[str, object]:
+        pairwise = [
+            {
+                "first_window_size": first,
+                "second_window_size": second,
+                "metric_cosine": 0.8,
+                "age_pullback_cosine": 0.7,
+                "age_prediction_pearson": 0.6,
+                "age_prediction_mean_absolute_difference": 0.01,
+                "age_prediction_sign_agreement": 0.9,
+                "linear_cka": 0.8,
+                "top_neighbour_overlap": 0.7,
+                "neighbour_sample_count": protocol.geometry.neighbour_sample_size,
+                "neighbour_count": protocol.geometry.neighbour_count,
+                "pair_prediction_agreement": agreement,
+            }
+            for first, second in deterministic_window_pairs(protocol.windows)
+        ]
+        candidate_rows = [{"predictions": prediction} for _ in range(25)]
+        rank_rows = [{"rank": rank} for rank in protocol.display.candidate_ranks]
+        display = {
+            "source_count": 3,
+            "display_count": 2,
+            "distance_class": [0, 7],
+            "targets": {component: [0.1, 0.2] for component in interpretation_report._COMPONENTS},
+            "predictions": pair_predictions,
+        }
+        return {
+            "split_name": split,
+            "window_sizes": list(protocol.windows),
+            "pairwise_window_comparisons": pairwise,
+            "age_rank_curves": {"positive": rank_rows, "negative": rank_rows},
+            "pair_candidate_distance_class": "trans",
+            "pair_rank_curves": {"positive": rank_rows, "negative": rank_rows},
+            "age_candidates": {"positive": candidate_rows, "negative": candidate_rows},
+            "pair_candidates": {"positive": candidate_rows, "negative": candidate_rows},
+            "age_display": [
+                {"predictions": prediction} for _ in range(protocol.display.age_probe_count)
+            ],
+            "pair_displays": dict.fromkeys(interpretation_report._POPULATIONS, display),
+        }
+
+    results: dict[str, object] = {
+        "window_comparisons": [split_record(split) for split in protocol.splits],
+    }
+    interpretation_report._validate_v2_window_comparisons(results, protocol)
+    comparisons = cast(list[object], results["window_comparisons"])
+    first_record = comparisons[0]
+    assert isinstance(first_record, dict)
+    first_pairwise_raw = cast(dict[str, object], first_record)["pairwise_window_comparisons"]
+    assert isinstance(first_pairwise_raw, list)
+    first_pairwise = cast(list[object], first_pairwise_raw)
+    first_pairwise[0], first_pairwise[1] = first_pairwise[1], first_pairwise[0]
+    with pytest.raises(ValueError, match="pairwise window-comparison identity"):
+        interpretation_report._validate_v2_window_comparisons(results, protocol)
 
 
 def test_interpretation_protocol_identity_grid_and_lookup_fail_loudly() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -426,24 +427,47 @@ def deterministic_indices(size: int, maximum: int, *, seed: int) -> t.Tensor:
 
 
 @beartype
+def deterministic_window_pairs(windows: tuple[int, ...]) -> tuple[tuple[int, int], ...]:
+    """Return every unordered window pair in the registered window order."""
+
+    if (
+        len(windows) < 2
+        or any(isinstance(window, bool) or window <= 0 for window in windows)
+        or tuple(sorted(windows)) != windows
+        or len(set(windows)) != len(windows)
+    ):
+        raise ValueError("window comparisons require unique increasing positive windows")
+    pairs = tuple(itertools.combinations(windows, 2))
+    if len(pairs) != len(windows) * (len(windows) - 1) // 2:
+        raise RuntimeError("unordered window-pair construction is incomplete")
+    return pairs
+
+
+@beartype
 def stable_extreme_indices(
     first: t.Tensor,
     second: t.Tensor,
-    *,
+    *additional: t.Tensor,
     positive: bool,
     maximum: int,
 ) -> t.Tensor:
-    """Rank same-sign cross-window predictions without reading empirical targets."""
+    """Rank predictions stable in sign and magnitude across every supplied window."""
 
-    _require_vector(first, "first candidate prediction")
-    _require_vector(second, "second candidate prediction")
-    if first.shape != second.shape or maximum <= 0:
+    predictions = (first, second, *additional)
+    for index, prediction in enumerate(predictions):
+        _require_vector(prediction, f"candidate prediction {index}")
+    if (
+        any(prediction.shape != first.shape for prediction in predictions[1:])
+        or any(prediction.dtype != first.dtype for prediction in predictions[1:])
+        or maximum <= 0
+    ):
         raise ValueError("candidate predictions or maximum differ")
-    eligible = (first > 0.0) & (second > 0.0) if positive else (first < 0.0) & (second < 0.0)
+    stacked = t.stack(predictions)
+    eligible = (stacked > 0.0).all(dim=0) if positive else (stacked < 0.0).all(dim=0)
     indices = t.nonzero(eligible).flatten()
     if indices.numel() < maximum:
         raise ValueError("not enough same-sign predictions for the candidate table")
-    score = t.minimum(first.abs(), second.abs()).index_select(0, indices)
+    score = stacked.abs().amin(dim=0).index_select(0, indices)
     order = t.argsort(score, descending=True, stable=True)[:maximum]
     return indices.index_select(0, order)
 

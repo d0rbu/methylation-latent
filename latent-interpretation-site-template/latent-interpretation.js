@@ -35,29 +35,95 @@ const windowLabel = window => `${window / 1024} kb`;
 const cellLabel = cell => `${splitLabels[cell.split_name]} · ${windowLabel(cell.window_size)}`;
 const element = (name, text = "") => { const node = document.createElement(name); node.textContent = text; return node; };
 const unique = values => [...new Set(values)];
+const resultSchemas = {
+  v1: "methylation-latent.latent-interpretation-results.v1",
+  v2: "methylation-latent.latent-interpretation-results.v2",
+};
+const provenanceSchemas = {
+  [resultSchemas.v1]: "methylation-latent.latent-interpretation-site-provenance.v1",
+  [resultSchemas.v2]: "methylation-latent.latent-interpretation-site-provenance.v2",
+};
 
-const assertData = (data, provenance) => {
-  if (data.schema !== "methylation-latent.latent-interpretation-results.v1") throw new Error("Interpretation result schema differs");
+const normalizeLegacyRows = rows => rows.map(row => {
+  const {prediction_1kb, prediction_4kb, ...fields} = row;
+  return {...fields, predictions: {"1024": prediction_1kb, "4096": prediction_4kb}};
+});
+const normalizeLegacyComparison = comparison => {
+  const pairwiseKeys = [
+    "metric_cosine", "age_pullback_cosine", "age_prediction_pearson",
+    "age_prediction_mean_absolute_difference", "age_prediction_sign_agreement", "linear_cka",
+    "top_neighbour_overlap", "neighbour_sample_count", "neighbour_count",
+    "pair_prediction_agreement",
+  ];
+  const pairwise = {first_window_size: 1024, second_window_size: 4096};
+  pairwiseKeys.forEach(key => { pairwise[key] = comparison[key]; });
+  const pairDisplays = Object.fromEntries(Object.entries(comparison.pair_displays).map(([population, display]) => [population, {
+    source_count: display.source_count,
+    display_count: display.display_count,
+    distance_class: display.distance_class,
+    targets: {
+      total: display.target_total,
+      age_component: display.target_age,
+      age_adjusted_residual: display.target_residual,
+    },
+    predictions: {
+      "1024": {total: display.prediction_1kb_total, age_component: display.prediction_1kb_age, age_adjusted_residual: display.prediction_1kb_residual},
+      "4096": {total: display.prediction_4kb_total, age_component: display.prediction_4kb_age, age_adjusted_residual: display.prediction_4kb_residual},
+    },
+  }]));
+  return {
+    split_name: comparison.split_name,
+    window_sizes: [1024, 4096],
+    pairwise_window_comparisons: [pairwise],
+    age_rank_curves: comparison.age_rank_curves,
+    pair_candidate_distance_class: comparison.pair_candidate_distance_class,
+    pair_rank_curves: comparison.pair_rank_curves,
+    age_candidates: Object.fromEntries(Object.entries(comparison.age_candidates).map(([direction, rows]) => [direction, normalizeLegacyRows(rows)])),
+    pair_candidates: Object.fromEntries(Object.entries(comparison.pair_candidates).map(([direction, rows]) => [direction, normalizeLegacyRows(rows)])),
+    age_display: normalizeLegacyRows(comparison.age_display),
+    pair_displays: pairDisplays,
+  };
+};
+const normalizeData = data => {
+  if (data.schema === resultSchemas.v2) return data;
+  if (data.schema !== resultSchemas.v1) throw new Error("Interpretation result schema differs");
+  return {...data, schema: resultSchemas.v2, window_comparisons: data.window_comparisons.map(normalizeLegacyComparison)};
+};
+
+const assertData = (data, provenance, sourceSchema) => {
+  if (data.schema !== resultSchemas.v2) throw new Error("Normalized interpretation result schema differs");
   if (data.status !== "post_hoc_hypothesis_generating") throw new Error("Interpretation scientific-status warning differs");
-  if (!Array.isArray(data.cells) || data.cells.length !== 4) throw new Error("Expected exactly four interpretation cells");
-  if (!Array.isArray(data.window_comparisons) || data.window_comparisons.length !== 2) throw new Error("Expected two window comparisons");
+  if (!Array.isArray(data.window_comparisons) || data.window_comparisons.length !== Object.keys(splitLabels).length) throw new Error("Expected one window comparison record per split");
+  const windows = data.window_comparisons[0].window_sizes;
+  if (!Array.isArray(windows) || windows.length < 2) throw new Error("Interpretation window axis differs");
+  if (!Array.isArray(data.cells) || data.cells.length !== Object.keys(splitLabels).length * windows.length) throw new Error("Interpretation cell grid count differs");
   if (data.audit.gpu_used !== false || data.audit.model_parameters_changed !== false) throw new Error("Interpretation runtime contract differs");
   if (data.audit.candidate_selection_reads_empirical_targets !== false) throw new Error("Candidate ranking read empirical targets");
   if (data.audit.manifest_matched_probes !== data.audit.manifest_requested_probes) throw new Error("Manifest annotation join is incomplete");
   const identities = new Set(data.cells.map(cell => `${cell.split_name}|${cell.window_size}`));
-  if (identities.size !== 4) throw new Error("Interpretation cell grid is duplicated");
+  if (identities.size !== data.cells.length) throw new Error("Interpretation cell grid is duplicated");
+  const expectedPairs = windows.flatMap((first, index) => windows.slice(index + 1).map(second => `${first}|${second}`));
+  const ageDisplayCount = data.window_comparisons[0].age_display.length;
+  const candidateCount = data.window_comparisons[0].age_candidates.positive.length;
+  if (ageDisplayCount < 1 || candidateCount < 1) throw new Error("Interpretation display payload is empty");
   data.window_comparisons.forEach(comparison => {
-    if (comparison.age_display.length !== 2000) throw new Error("Age display sample differs");
+    if (comparison.window_sizes.join("|") !== windows.join("|")) throw new Error("Window axes differ between splits");
+    const observedPairs = comparison.pairwise_window_comparisons.map(row => `${row.first_window_size}|${row.second_window_size}`);
+    if (observedPairs.join(",") !== expectedPairs.join(",")) throw new Error("Pairwise window-comparison axis differs");
+    if (comparison.age_display.length !== ageDisplayCount) throw new Error("Age display sample differs");
+    comparison.age_display.forEach(row => { if (Object.keys(row.predictions).length !== windows.length) throw new Error("Age display window axis differs"); });
     ["positive", "negative"].forEach(direction => {
-      if (comparison.age_candidates[direction].length !== 25 || comparison.pair_candidates[direction].length !== 25) throw new Error("Candidate table size differs");
+      if (comparison.age_candidates[direction].length !== candidateCount || comparison.pair_candidates[direction].length !== candidateCount) throw new Error("Candidate table size differs");
+      [...comparison.age_candidates[direction], ...comparison.pair_candidates[direction]].forEach(row => { if (Object.keys(row.predictions).length !== windows.length) throw new Error("Candidate prediction window axis differs"); });
     });
     Object.values(comparison.pair_displays).forEach(display => {
-      ["distance_class", "target_total", "target_age", "target_residual", "prediction_1kb_total", "prediction_1kb_age", "prediction_1kb_residual", "prediction_4kb_total", "prediction_4kb_age", "prediction_4kb_residual"].forEach(key => {
-        if (display[key].length !== display.display_count) throw new Error("Pair display axes differ");
-      });
+      if (display.distance_class.length !== display.display_count) throw new Error("Pair display distance axis differs");
+      Object.values(display.targets).forEach(values => { if (values.length !== display.display_count) throw new Error("Pair display target axes differ"); });
+      if (Object.keys(display.predictions).length !== windows.length) throw new Error("Pair display prediction window axis differs");
+      Object.values(display.predictions).forEach(components => Object.values(components).forEach(values => { if (values.length !== display.display_count) throw new Error("Pair display prediction axes differ"); }));
     });
   });
-  if (provenance.schema !== "methylation-latent.latent-interpretation-site-provenance.v1") throw new Error("Interpretation provenance schema differs");
+  if (provenance.schema !== provenanceSchemas[sourceSchema]) throw new Error("Interpretation provenance schema differs");
   if (provenance.producer_git_commit !== data.identity.code_git_commit) throw new Error("Producer identity differs");
   if (provenance.config_sha256 !== data.identity.analysis_config_sha256) throw new Error("Analysis config identity differs");
 };
@@ -127,19 +193,23 @@ const drawScatter = (canvas, xs, ys, colors, {xLabel, yLabel}) => {
 const renderSummary = data => {
   const diverse = data.reliability["diverse-blocks"], chromosome = data.reliability["held-out-chromosome"];
   const surrogateR2 = data.cells.map(cell => cell.surrogates.cpg_gc_plus_annotations.model_output.r_squared);
+  const residualCorrelations = data.cells.flatMap(cell => Object.values(cell.pair_decomposition).map(population => population.overall.age_adjusted_residual.pearson));
+  const pairwise = data.window_comparisons.flatMap(comparison => comparison.pairwise_window_comparisons);
+  const metricCosines = pairwise.map(row => row.metric_cosine), ckaValues = pairwise.map(row => row.linear_cka);
+  const bestCell = data.cells.reduce((best, cell) => cell.pair_decomposition.held_out_stratified.overall.age_adjusted_residual.pearson > best.pair_decomposition.held_out_stratified.overall.age_adjusted_residual.pearson ? cell : best);
   const node = document.querySelector("#findings");
   node.append(
     finding("The targets are not especially noisy.", `Probe–age split-half reliability is ${fmt(diverse.probe_age.mean)}–${fmt(chromosome.probe_age.mean)}; total pair reliability is ${fmt(diverse.pair_overall.total.mean)}–${fmt(chromosome.pair_overall.total.mean)}. The model's much lower correlations therefore reflect missing predictive structure or transport limits, not merely unstable labels.`),
-    finding("Age helps, but is not the whole pair result.", "The age rank-one component is consistently easier to predict. After subtracting it exactly from both empirical and predicted Gram values, held-out residual correlations remain about 0.14–0.24 across the completed cells and populations."),
-    finding("The learned metric is stable and effectively low-dimensional.", "The 1 kb and 4 kb metrics have cosine 0.92–0.95 and CKA 0.92–0.93, while normalized held-out representations have participation rank only about 23–24 despite d = 128 or 256."),
+    finding("Age helps, but is not the whole pair result.", `After subtracting the age rank-one component exactly from both empirical and predicted Gram values, residual correlations span ${fmt(Math.min(...residualCorrelations))}–${fmt(Math.max(...residualCorrelations))} across completed cells and populations.`),
+    finding("Window stability is rotation-invariant.", `Across all registered window pairs, metric cosine spans ${fmt(Math.min(...metricCosines))}–${fmt(Math.max(...metricCosines))} and linear CKA spans ${fmt(Math.min(...ckaValues))}–${fmt(Math.max(...ckaValues))}. Named latent coordinates are never compared.`),
     finding("The age lobes are mostly broad locus classes.", `CpG/GC plus manifest annotations explain ${pct(Math.min(...surrogateR2))}–${pct(Math.max(...surrogateR2))} of held-out model-output variance. CpG context and Infinium chemistry are prominent; manifest strand is not.`, true),
-    finding("Use rankings as directional screens, not quantitative estimates.", "Extreme predictions enrich for the correct empirical sign, but within-rank prediction-versus-empirical magnitude correlations are generally near zero. Extreme pair cosines are particularly overconfident." , true),
+    finding("Use rankings as directional screens, not quantitative estimates.", "Candidate ranks require a common sign across every completed window and use the smallest absolute prediction. Empirical targets are revealed only after that prediction-only order is frozen.", true),
   );
   const headline = document.querySelector("#headline");
   headline.append(
     summaryCard("Age target reliability", fmt(chromosome.probe_age.mean), "Strict chromosome split · split-half r"),
     summaryCard("Residual pair reliability", fmt(chromosome.pair_overall.age_adjusted_residual.mean), "Strict chromosome split · split-half r"),
-    summaryCard("Best held-out residual r", fmt(Math.max(...data.cells.map(cell => cell.pair_decomposition.held_out_stratified.overall.age_adjusted_residual.pearson))), "4 kb · held-out chromosome 7"),
+    summaryCard("Best held-out residual r", fmt(bestCell.pair_decomposition.held_out_stratified.overall.age_adjusted_residual.pearson), cellLabel(bestCell)),
     summaryCard("Manifest probes joined", data.audit.manifest_matched_probes.toLocaleString(), "Exact GPL13534 build-37 identity"),
   );
 };
@@ -192,11 +262,12 @@ const renderDecomposition = data => {
 
 const renderPairScatter = data => {
   const splitSelect = document.querySelector("#pair-split"), populationSelect = document.querySelector("#pair-population"), componentSelect = document.querySelector("#pair-component"), windowSelect = document.querySelector("#pair-window");
-  addOptions(splitSelect, Object.entries(splitLabels)); addOptions(populationSelect, Object.entries(populationLabels)); addOptions(componentSelect, Object.entries(componentLabels)); addOptions(windowSelect, [["1024", "1 kb"], ["4096", "4 kb"]]);
+  const windows = data.window_comparisons[0].window_sizes;
+  addOptions(splitSelect, Object.entries(splitLabels)); addOptions(populationSelect, Object.entries(populationLabels)); addOptions(componentSelect, Object.entries(componentLabels)); addOptions(windowSelect, windows.map(window => [String(window), windowLabel(window)]));
   const render = () => {
     const comparison = data.window_comparisons.find(row => row.split_name === splitSelect.value), display = comparison.pair_displays[populationSelect.value];
-    const component = componentSelect.value, suffix = component === "age_component" ? "age" : component === "age_adjusted_residual" ? "residual" : "total", windowKey = Number(windowSelect.value) === 1024 ? "1kb" : "4kb";
-    const target = display[`target_${suffix}`], prediction = display[`prediction_${windowKey}_${suffix}`], colors = display.distance_class.map(value => distanceColors[Number(value)]);
+    const component = componentSelect.value;
+    const target = display.targets[component], prediction = display.predictions[windowSelect.value][component], colors = display.distance_class.map(value => distanceColors[Number(value)]);
     drawScatter(document.querySelector("#pair-scatter"), target, prediction, colors, {xLabel: `Empirical ${componentShortLabels[component]}`, yLabel: `Predicted ${componentShortLabels[component]}`});
     const cell = data.cells.find(row => row.split_name === splitSelect.value && row.window_size === Number(windowSelect.value)), metric = cell.pair_decomposition[populationSelect.value].overall[component];
     replaceMetricStrip("#pair-scatter-metrics", [["Pearson", fmt(metric.pearson)], ["MSE", fmt(metric.mse)], ["R²", fmt(metric.r_squared)], ["display pairs", display.display_count.toLocaleString()], ["source pairs", display.source_count.toLocaleString()]]);
@@ -216,8 +287,8 @@ const renderAgeAudit = data => {
   const cellSelect = document.querySelector("#age-cell"), colorSelect = document.querySelector("#age-color"); addCellOptions(cellSelect, data.cells);
   addOptions(colorSelect, [["context", "Genomic context"], ["design", "Infinium chemistry"], ["regulatory", "Regulatory annotation"], ["enhancer", "Enhancer"], ["dhs", "DHS"], ["chromosome", "Chromosome"]]);
   const render = () => {
-    const cell = data.cells[Number(cellSelect.value)], comparison = data.window_comparisons.find(row => row.split_name === cell.split_name), predictionKey = cell.window_size === 1024 ? "prediction_1kb" : "prediction_4kb", rows = comparison.age_display;
-    drawScatter(document.querySelector("#age-scatter"), rows.map(row => row.empirical_rho), rows.map(row => row[predictionKey]), rows.map(row => annotationColor(row, colorSelect.value)), {xLabel: "Empirical probe–age correlation", yLabel: `Predicted correlation · ${windowLabel(cell.window_size)}`});
+    const cell = data.cells[Number(cellSelect.value)], comparison = data.window_comparisons.find(row => row.split_name === cell.split_name), rows = comparison.age_display;
+    drawScatter(document.querySelector("#age-scatter"), rows.map(row => row.empirical_rho), rows.map(row => row.predictions[String(cell.window_size)]), rows.map(row => annotationColor(row, colorSelect.value)), {xLabel: "Empirical probe–age correlation", yLabel: `Predicted correlation · ${windowLabel(cell.window_size)}`});
     replaceMetricStrip("#age-scatter-metrics", [["Pearson", fmt(cell.age.pearson)], ["MSE", fmt(cell.age.mse)], ["R²", fmt(cell.age.r_squared)], ["display probes", rows.length.toLocaleString()], ["held-out probes", cell.held_out_probe_count.toLocaleString()]]);
   };
   cellSelect.addEventListener("change", render); colorSelect.addEventListener("change", render); render();
@@ -229,9 +300,9 @@ const renderGeometry = data => {
   replaceTable("#geometry-table", ["Split/window", "d", "metric PR", "latent PR", "pre-norm PR", "90% latent dims", "final/init M cos", "final/init age cos", "ΔW/‖W₀‖"], data.cells.map(cell => [
     cellLabel(cell), cell.parent.latent_dimension, fmt(cell.weights.metric_spectrum.participation_rank), fmt(cell.representation.normalized_latent_covariance.participation_rank), fmt(cell.representation.pre_normalization_covariance.participation_rank), cell.representation.normalized_latent_covariance.dimensions_for_90_percent_trace, fmt(cell.weights.final_initial_metric_cosine), fmt(cell.weights.final_initial_age_pullback_cosine), fmt(cell.weights.relative_weight_change),
   ]));
-  const comparisons = data.window_comparisons;
-  replaceTable("#stability-table", ["Split", "M cosine", "age-direction cosine", "age prediction r", "age sign", "linear CKA", "top-25 overlap", "HH total r", "HH residual r"], comparisons.map(row => [
-    splitLabels[row.split_name], fmt(row.metric_cosine), fmt(row.age_pullback_cosine), fmt(row.age_prediction_pearson), pct(row.age_prediction_sign_agreement), fmt(row.linear_cka), pct(row.top_neighbour_overlap), fmt(row.pair_prediction_agreement.held_out_stratified.total_prediction_pearson), fmt(row.pair_prediction_agreement.held_out_stratified.residual_prediction_pearson),
+  const comparisons = data.window_comparisons.flatMap(comparison => comparison.pairwise_window_comparisons.map(pair => ({...pair, split_name: comparison.split_name})));
+  replaceTable("#stability-table", ["Split/window pair", "M cosine", "age-direction cosine", "age prediction r", "age sign", "linear CKA", "top-25 overlap", "HH total r", "HH residual r"], comparisons.map(row => [
+    `${splitLabels[row.split_name]} · ${windowLabel(row.first_window_size)}–${windowLabel(row.second_window_size)}`, fmt(row.metric_cosine), fmt(row.age_pullback_cosine), fmt(row.age_prediction_pearson), pct(row.age_prediction_sign_agreement), fmt(row.linear_cka), pct(row.top_neighbour_overlap), fmt(row.pair_prediction_agreement.held_out_stratified.total_prediction_pearson), fmt(row.pair_prediction_agreement.held_out_stratified.residual_prediction_pearson),
   ]));
 };
 
@@ -253,15 +324,16 @@ const genes = locus => unique(locus.refgene_names).join(", ") || "—";
 const locusLabel = locus => `${locus.probe_id} · chr${locus.chromosome}:${Number(locus.position).toLocaleString()}`;
 const renderCandidates = data => {
   const splitSelect = document.querySelector("#candidate-split"), targetSelect = document.querySelector("#candidate-target"), directionSelect = document.querySelector("#candidate-direction");
+  const windows = data.window_comparisons[0].window_sizes, windowHeaders = windows.map(windowLabel), stableWindows = windowHeaders.join("/");
   addOptions(splitSelect, Object.entries(splitLabels)); addOptions(targetSelect, [["age", "Probe–age"], ["pair", "Cross-probe pair"]]); addOptions(directionSelect, [["positive", "Positive"], ["negative", "Negative"]]);
   const render = () => {
     const comparison = data.window_comparisons.find(row => row.split_name === splitSelect.value), target = targetSelect.value, rows = comparison[`${target}_candidates`][directionSelect.value], container = document.querySelector("#candidate-table");
     container.replaceChildren();
-    document.querySelector("#candidate-note").textContent = target === "age" ? "Ranked by the smaller absolute 1 kb/4 kb age prediction after requiring matching signs. Empirical rho was not read until the list was frozen." : `Ranked by the smaller absolute 1 kb/4 kb cosine after requiring matching signs. The frozen pair class is ${distanceLabels[comparison.pair_candidate_distance_class]}; empirical covariance was not read until ranking was frozen.`;
+    document.querySelector("#candidate-note").textContent = target === "age" ? `Ranked by the smallest absolute ${stableWindows} age prediction after requiring one common sign across all windows. Empirical rho was not read until the list was frozen.` : `Ranked by the smallest absolute ${stableWindows} cosine after requiring one common sign across all windows. The frozen pair class is ${distanceLabels[comparison.pair_candidate_distance_class]}; empirical covariance was not read until ranking was frozen.`;
     if (target === "age") {
-      container.append(table(["Probe/locus", "genes", "context", "design", "1 kb", "4 kb", "empirical ρ", "sign correct"], rows.map(row => [locusLabel(row), genes(row), row.context, row.design, fmt(row.prediction_1kb), fmt(row.prediction_4kb), fmt(row.empirical_rho), Math.sign(row.prediction_1kb) === Math.sign(row.empirical_rho) ? "yes" : "no"])));
+      container.append(table(["Probe/locus", "genes", "context", "design", ...windowHeaders, "empirical ρ", "sign correct"], rows.map(row => [locusLabel(row), genes(row), row.context, row.design, ...windows.map(window => fmt(row.predictions[String(window)])), fmt(row.empirical_rho), Math.sign(row.predictions[String(windows[0])]) === Math.sign(row.empirical_rho) ? "yes" : "no"])));
     } else {
-      container.append(table(["Left locus", "left genes", "Right locus", "right genes", "1 kb", "4 kb", "empirical Y", "empirical residual", "sign correct"], rows.map(row => [locusLabel(row.left), genes(row.left), locusLabel(row.right), genes(row.right), fmt(row.prediction_1kb), fmt(row.prediction_4kb), fmt(row.empirical_correlation), fmt(row.empirical_age_adjusted_residual), Math.sign(row.prediction_1kb) === Math.sign(row.empirical_correlation) ? "yes" : "no"])));
+      container.append(table(["Left locus", "left genes", "Right locus", "right genes", ...windowHeaders, "empirical Y", "empirical residual", "sign correct"], rows.map(row => [locusLabel(row.left), genes(row.left), locusLabel(row.right), genes(row.right), ...windows.map(window => fmt(row.predictions[String(window)])), fmt(row.empirical_correlation), fmt(row.empirical_age_adjusted_residual), Math.sign(row.predictions[String(windows[0])]) === Math.sign(row.empirical_correlation) ? "yes" : "no"])));
     }
   };
   [splitSelect, targetSelect, directionSelect].forEach(select => select.addEventListener("change", render)); render();
@@ -273,9 +345,10 @@ Promise.all([
 ]).then(async responses => {
   responses.forEach(response => { if (!response.ok) throw new Error(`Interpretation artifact request failed: ${response.status}`); });
   return Promise.all(responses.map(response => response.json()));
-}).then(([data, provenance]) => {
-  assertData(data, provenance);
-  document.querySelector("#status").textContent = "Complete: 16 subject split-halves, exact age/residual decomposition, rotation-invariant geometry, annotation surrogates, and prediction-only rankings.";
+}).then(([rawData, provenance]) => {
+  const sourceSchema = rawData.schema, data = normalizeData(rawData);
+  assertData(data, provenance, sourceSchema);
+  document.querySelector("#status").textContent = `Complete: ${data.reliability["diverse-blocks"].subject_split_count} subject split-halves, exact age/residual decomposition, rotation-invariant geometry, annotation surrogates, and prediction-only rankings.`;
   document.querySelector("#protocol").textContent = `${data.identity.protocol_id} · artifacts ${data.identity.code_git_commit.slice(0, 12)}`;
   const provenanceList = document.querySelector("#provenance");
   [

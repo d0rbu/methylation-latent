@@ -19,15 +19,17 @@ input feature.
 ## Findings
 
 The lobes are principally negative-age-association versus positive-age-association CpGs. The
-strongest measured separator is genomic CpG context and local CpG density, not chromosome, strand,
-or sex. For the full latent metric:
+strongest categorical separator is genomic CpG context, not chromosome, strand, or sex. Local
+sequence-feature contrasts depend on the window scale. For the full latent metric:
 
 | Split | Window | context Cramer's V | design V | strand V | chromosome V | CpG-density Cohen's d | female/male rho correlation | female/male lobe d |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | diverse blocks | 1 kb | 0.577 | 0.346 | 0.036 | 0.175 | 1.747 | 0.933 | 1.642 / 1.931 |
 | diverse blocks | 4 kb | 0.543 | 0.321 | 0.031 | 0.211 | 0.978 | 0.933 | 1.702 / 2.036 |
+| diverse blocks | 16 kb | 0.528 | 0.314 | 0.026 | 0.234 | 0.100 | 0.933 | 1.693 / 2.013 |
 | chromosome 7 | 1 kb | 0.660 | 0.365 | 0.008 | not testable | 2.018 | 0.952 | 1.868 / 2.225 |
 | chromosome 7 | 4 kb | 0.663 | 0.350 | 0.014 | not testable | 1.243 | 0.952 | 1.870 / 2.267 |
+| chromosome 7 | 16 kb | 0.660 | 0.345 | 0.014 | not testable | 0.236 | 0.952 | 1.881 / 2.279 |
 
 In the chromosome-7 holdout, both lobes remain although chromosome is constant. In the diverse
 holdout, chromosome association is substantially weaker than context association. Strand
@@ -67,7 +69,7 @@ uv run python scripts/analyze_age_scatter_clusters.py \
   --experiments "$RUN_ROOT/experiments" \
   --direct-age "$RUN_ROOT/exploratory/direct-tanh-age-v1" \
   --output "$RUN_ROOT/exploratory/age-scatter-cluster-audit-v1" \
-  --windows 1024 4096
+  --windows 1024 4096 16384
 ```
 
 Existing outputs are accepted only if their canonical records exactly match a rerun. The script

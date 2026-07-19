@@ -5,6 +5,20 @@ for the sequence-derived latent metric. It is post-hoc and hypothesis-generating
 4 kb primary test results were already viewed before this protocol was created. It cannot replace
 or revise protocol v2.
 
+## Versioned window scope
+
+Dual-probe protocol v1 and its 1 kb/4 kb artifact root remain immutable. A separately frozen
+dual-probe protocol v2 may register a canonical supported window subset containing 16 kb, including
+a 16-kb-only grid. Every registered split/window cell must pin its own selected parent dimension,
+age-loss weight, selection record, evaluation record, embedding manifest, and pair-cache metadata.
+The v2 run writes a separate artifact root and a v2 completeness manifest; it does not append to or
+reinterpret the v1 root.
+
+The report compiler may combine validated v1 and v2 roots only when they share the same parent
+protocol and sealed data bundle. It records protocol, manifest, and producer provenance per source
+and rejects any split/window cell claimed by more than one source. No v2 result is eligible until
+the v2 configuration is frozen with the exact parent artifact identities.
+
 ## Model
 
 For each fitting partition, retain one learned vector `u_i` per fitting probe and compute one

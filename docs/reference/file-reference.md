@@ -7,7 +7,9 @@
 | `configs/protocol-v2.toml` | Frozen scientific choices and immutable external identities |
 | `configs/protein-extension-v1.toml` | Separate frozen post-hoc protein protocol, source hashes, protein identities, split, representations, and objective |
 | `configs/dual-probe-latent-v1.toml` | Frozen post-hoc alpha/schedule sweep and train-only dual-latent contract |
+| `configs/dual-probe-latent-v2.toml` | Separate frozen 16-kb extension of the dual-latent contract with exact 16-kb parent identities |
 | `configs/latent-interpretation-v1.toml` | Frozen post-hoc reliability, invariant-geometry, decomposition, and candidate-display contract |
+| `configs/latent-interpretation-v2.toml` | Frozen three-window interpretation extension with exact 1-kb, 4-kb, and 16-kb parent identities |
 | `scripts/prepare_gse87571.py` | Build primary cohort, targets, features, and splits |
 | `scripts/seal_primary_data.py` | Recompute invariants and seal the 17-file data bundle |
 | `scripts/run_experiments.py` | Ordered sequence/pair/age/full/evaluate stages |

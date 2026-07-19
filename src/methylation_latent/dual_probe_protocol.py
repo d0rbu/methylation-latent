@@ -26,7 +26,12 @@ from methylation_latent.dual_probe import AlphaSchedule, AlphaScheduleMode
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", flags=re.ASCII)
 _SPLITS = ("diverse-blocks", "held-out-chromosome")
-_WINDOWS = (1_024, 4_096)
+_SUPPORTED_WINDOWS = (1_024, 4_096, 16_384)
+_V1_WINDOWS = (1_024, 4_096)
+_V1_PROTOCOL_ID = "gse87571-posthoc-dual-probe-latent-v1"
+_V2_PROTOCOL_ID = "gse87571-posthoc-dual-probe-latent-v2"
+_PARENT_LATENT_DIMENSIONS = (16, 32, 64, 128, 256)
+_PARENT_LAMBDA_AGES = (0.1, 1.0, 10.0)
 
 
 def _exact_keys(raw: Mapping[str, object], expected: set[str], context: str) -> None:
@@ -97,7 +102,7 @@ class DualInitializationConfig:
             or self.relative_residual_ceiling != 1.0e-5
             or self.discarded_cross_moment_ceiling != 0.005
         ):
-            raise ValueError("dual least-squares audit thresholds differ from protocol v1")
+            raise ValueError("dual least-squares audit thresholds differ from reviewed versions")
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +129,7 @@ class DualOptimizationConfig:
         )
         expected = (0.1, 512, 1_048_576, 2_000, 100, 512, 0.001, (851733, 851734, 851735))
         if observed != expected:
-            raise ValueError("dual optimization schedule differs from protocol v1")
+            raise ValueError("dual optimization schedule differs from reviewed versions")
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,10 +144,12 @@ class DualParentCell:
     pair_cache_metadata_sha256: str
 
     def __post_init__(self) -> None:
-        if self.split not in _SPLITS or int(self.window_size) not in _WINDOWS:
-            raise ValueError("dual parent cell is outside the frozen split/window grid")
-        if float(self.lambda_age) != 0.1:
-            raise ValueError("dual parent age weight must equal the selected parent value 0.1")
+        if self.split not in _SPLITS or int(self.window_size) not in _SUPPORTED_WINDOWS:
+            raise ValueError("dual parent cell is outside the supported split/window grid")
+        if int(self.latent_dimension) not in _PARENT_LATENT_DIMENSIONS:
+            raise ValueError("dual parent latent dimension is outside the parent sweep")
+        if float(self.lambda_age) not in _PARENT_LAMBDA_AGES:
+            raise ValueError("dual parent age weight is outside the parent sweep")
         hashes = (
             self.selection_sha256,
             self.evaluation_sha256,
@@ -163,6 +170,8 @@ class DualProbeProtocolConfig:
     parent_protocol_id: str
     parent_protocol_sha256: str
     data_bundle_sha256: str
+    windows: tuple[WindowSize, ...]
+    splits: tuple[str, ...]
     initialization: DualInitializationConfig
     optimization: DualOptimizationConfig
     fixed_alphas: tuple[Fraction, ...]
@@ -170,21 +179,49 @@ class DualProbeProtocolConfig:
     parents: tuple[DualParentCell, ...]
 
     def __post_init__(self) -> None:
-        if self.protocol_id != "gse87571-posthoc-dual-probe-latent-v1":
-            raise ValueError("dual protocol ID differs from reviewed v1")
+        window_values = tuple(map(int, self.windows))
+        if self.protocol_id == _V1_PROTOCOL_ID:
+            if window_values != _V1_WINDOWS:
+                raise ValueError("dual protocol v1 windows differ from the reviewed grid")
+            if any(float(parent.lambda_age) != 0.1 for parent in self.parents):
+                raise ValueError("dual protocol v1 parent age weights differ from reviewed values")
+        elif self.protocol_id == _V2_PROTOCOL_ID:
+            canonical_windows = tuple(
+                window for window in _SUPPORTED_WINDOWS if window in window_values
+            )
+            if (
+                not window_values
+                or len(set(window_values)) != len(window_values)
+                or window_values != canonical_windows
+                or 16_384 not in window_values
+            ):
+                raise ValueError(
+                    "dual protocol v2 windows must be a canonical supported subset containing 16384"
+                )
+        else:
+            raise ValueError("dual protocol ID is not a supported reviewed version")
+        if self.splits != _SPLITS:
+            raise ValueError("dual protocol split grid differs from reviewed versions")
         if self.parent_protocol_id != "gse87571-hg19-caduceus-ps-v2":
             raise ValueError("dual parent protocol ID differs")
         hashes = (self.parent_protocol_sha256, self.data_bundle_sha256)
         if any(_SHA256.fullmatch(value) is None for value in hashes):
             raise ValueError("dual protocol fingerprints must be SHA-256 values")
         if tuple(map(float, self.fixed_alphas)) != (0.0, 0.25, 0.5, 0.75, 1.0):
-            raise ValueError("dual fixed-alpha sweep differs from protocol v1")
+            raise ValueError("dual fixed-alpha sweep differs from reviewed versions")
         if self.schedule_names != ("linear_0_to_1", "linear_1_to_0"):
-            raise ValueError("dual alpha schedules differ from protocol v1")
+            raise ValueError("dual alpha schedules differ from reviewed versions")
         keys = tuple(parent.key for parent in self.parents)
-        expected = tuple((split, window) for split in _SPLITS for window in _WINDOWS)
+        expected = tuple((split, window) for split in self.splits for window in window_values)
         if len(set(keys)) != len(keys) or set(keys) != set(expected):
-            raise ValueError("dual parent cells must exactly cover the frozen grid")
+            raise ValueError("dual parent cells must exactly cover the protocol grid")
+
+    @property
+    def manifest_schema(self) -> str:
+        """Return the manifest schema whose completeness semantics match this protocol."""
+
+        version = "v1" if self.protocol_id == _V1_PROTOCOL_ID else "v2"
+        return f"methylation-latent.dual-probe-manifest.{version}"
 
     def parent(self, split: str, window_size: int) -> DualParentCell:
         matches = tuple(parent for parent in self.parents if parent.key == (split, window_size))
@@ -255,7 +292,7 @@ def _parse_parent(raw: object) -> DualParentCell:
 
 
 def load_dual_probe_protocol(path: Path) -> DualProbeProtocolConfig:
-    """Parse every field and reject any drift from the reviewed post-hoc protocol."""
+    """Parse every field and reject drift from a reviewed post-hoc protocol version."""
 
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     _exact_keys(
@@ -282,18 +319,15 @@ def load_dual_probe_protocol(path: Path) -> DualProbeProtocolConfig:
         _string(protocol["status"], "protocol.status") != "frozen"
         or _string(protocol["scientific_status"], "protocol.scientific_status")
         != "post_hoc_hypothesis_generating"
-        or tuple(
-            _integer(value, "protocol.windows")
-            for value in _list(protocol["windows"], "protocol.windows")
-        )
-        != _WINDOWS
-        or tuple(
-            _string(value, "protocol.splits")
-            for value in _list(protocol["splits"], "protocol.splits")
-        )
-        != _SPLITS
     ):
-        raise ValueError("dual protocol status or experiment axes differ from reviewed v1")
+        raise ValueError("dual protocol status differs from reviewed versions")
+    windows = tuple(
+        parse_window_size(_integer(value, "protocol.windows"))
+        for value in _list(protocol["windows"], "protocol.windows")
+    )
+    splits = tuple(
+        _string(value, "protocol.splits") for value in _list(protocol["splits"], "protocol.splits")
+    )
 
     objective = _table(raw, "objective")
     _exact_keys(
@@ -319,7 +353,7 @@ def load_dual_probe_protocol(path: Path) -> DualProbeProtocolConfig:
         != 0.0
         or _number(objective["weight_decay"], "objective.weight_decay") != 0.0
     ):
-        raise ValueError("dual objective differs from reviewed v1")
+        raise ValueError("dual objective differs from reviewed versions")
 
     initialization = _table(raw, "initialization")
     _exact_keys(
@@ -344,7 +378,7 @@ def load_dual_probe_protocol(path: Path) -> DualProbeProtocolConfig:
             "initialization.validation_or_test_rows_allowed",
         )
     ):
-        raise ValueError("dual initialization contract differs from reviewed v1")
+        raise ValueError("dual initialization contract differs from reviewed versions")
     initialization_config = DualInitializationConfig(
         condition_ceiling=_number(
             initialization["normal_equation_condition_ceiling"],
@@ -384,7 +418,7 @@ def load_dual_probe_protocol(path: Path) -> DualProbeProtocolConfig:
         )
         != "sparse_adam"
     ):
-        raise ValueError("dual optimizer kinds differ from reviewed v1")
+        raise ValueError("dual optimizer kinds differ from reviewed versions")
     optimization = DualOptimizationConfig(
         catch_weight=parse_non_negative_weight(
             _number(objective["catch_weight"], "objective.catch_weight")
@@ -441,7 +475,7 @@ def load_dual_probe_protocol(path: Path) -> DualProbeProtocolConfig:
         "complete_primary_train",
     )
     if observed_selection != expected_selection:
-        raise ValueError("dual selection policy differs from reviewed v1")
+        raise ValueError("dual selection policy differs from reviewed versions")
 
     parents_raw = raw["parent"]
     if not isinstance(parents_raw, list) or not parents_raw:
@@ -453,6 +487,8 @@ def load_dual_probe_protocol(path: Path) -> DualProbeProtocolConfig:
             protocol["parent_protocol_sha256"], "protocol.parent_protocol_sha256"
         ),
         data_bundle_sha256=_sha256(protocol["data_bundle_sha256"], "protocol.data_bundle_sha256"),
+        windows=windows,
+        splits=splits,
         initialization=initialization_config,
         optimization=optimization,
         fixed_alphas=fixed_alphas,

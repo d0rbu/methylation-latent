@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import shutil
+from html import escape
 from pathlib import Path
 from typing import cast
 
@@ -69,6 +70,83 @@ _POPULATIONS = (
 )
 _STAGES = ("sequence_features", "caduceus_age_only", "full_latent_metric")
 _PRIMARY_REPRODUCTION_MAX_ULPS = 8
+_ROOT_STATUS_TOKEN = "{{INTERIM_WINDOW_STATUS}}"
+
+
+def _window_label(window: int) -> str:
+    if window % 1024 == 0:
+        return f"{window // 1024:,} kb"
+    return f"{window:,} bp"
+
+
+def _human_join(values: tuple[str, ...]) -> str:
+    if not values:
+        raise ValueError("cannot format an empty value list")
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} and {values[1]}"
+    return f"{', '.join(values[:-1])}, and {values[-1]}"
+
+
+def _window_phrase(windows: tuple[int, ...]) -> str:
+    noun = "window" if len(windows) == 1 else "windows"
+    return f"{_human_join(tuple(_window_label(window) for window in windows))} {noun}"
+
+
+def _interim_copy(
+    completed_windows: tuple[int, ...],
+    planned_windows: tuple[int, ...],
+    projection_window: int,
+) -> tuple[str, str, str]:
+    pending_windows = tuple(window for window in planned_windows if window not in completed_windows)
+    completed_phrase = _window_phrase(completed_windows)
+    pending_phrase = _window_phrase(pending_windows)
+    projection_label = _window_label(projection_window)
+    if projection_window in completed_windows:
+        projection_disclaimer = (
+            f"The preregistered {projection_label} held-out projection is not published by this "
+            "interim schema; it remains reserved for the all-windows primary site."
+        )
+        projection_root_status = (
+            f"The preregistered {projection_label} held-out projection remains reserved for the "
+            "all-windows primary site."
+        )
+    else:
+        projection_disclaimer = (
+            f"The preregistered {projection_label} held-out projection is not complete; no "
+            "substitute projection is generated."
+        )
+        projection_root_status = (
+            f"The preregistered {projection_label} held-out projection also remains pending; no "
+            "substitute projection is generated."
+        )
+    status = (
+        "Interim report: primary-validated selected-model results for the completed "
+        f"{completed_phrase}, nested-validation hyperparameter sweeps, and separately labeled "
+        "post-hoc direct-age, distance-integration, metadata-colored scatter, cluster-audit, "
+        "and interactive two-sphere latent UMAP analyses."
+    )
+    disclaimer = (
+        f"The planned {pending_phrase} {'is' if len(pending_windows) == 1 else 'are'} not "
+        f"complete. {projection_disclaimer} Distance integration was designed after viewing "
+        "existing test results; the corrected direct tanh baseline, k=2 scatter audit, and all "
+        "new visualizations are also post-hoc. They require a new holdout for confirmation."
+    )
+    root_status = (
+        f"Interim results: the {completed_phrase} "
+        f"{'is' if len(completed_windows) == 1 else 'are'} complete. The {pending_phrase} "
+        f"{'remains' if len(pending_windows) == 1 else 'remain'} pending. "
+        f"{projection_root_status} Distance integration is post-hoc exploratory; the age-lobe "
+        "audit and UMAP are also explicitly post-hoc."
+    )
+    return status, disclaimer, root_status
+
+
+def _render_root_index(template: str, status: str) -> str:
+    if template.count(_ROOT_STATUS_TOKEN) != 1:
+        raise ValueError("interim root template status placeholder differs")
+    return template.replace(_ROOT_STATUS_TOKEN, escape(status))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1210,8 +1288,20 @@ def main() -> None:
         or not set(windows) < set(planned_windows)
     ):
         raise ValueError("interim windows must be an increasing strict subset of the frozen sweep")
+    status, disclaimer, root_status = _interim_copy(
+        windows,
+        planned_windows,
+        int(config.sweep.projection_window_size),
+    )
     if arguments.results_output.exists() or arguments.site_output.exists():
         raise FileExistsError("interim result and site output directories must both be absent")
+    root_index = _render_root_index(
+        (arguments.root_template / "index.html").read_text(encoding="utf-8"),
+        root_status,
+    )
+    root_style = arguments.root_template / "style.css"
+    if not root_style.is_file():
+        raise FileNotFoundError(root_style)
     protocol_sha256 = sha256_file(arguments.config)
     bundle = verify_primary_data_bundle(
         arguments.data,
@@ -1228,11 +1318,12 @@ def main() -> None:
     )
     arguments.results_output.mkdir(parents=True)
     arguments.site_output.mkdir(parents=True)
-    for asset in ("index.html", "style.css"):
-        source = arguments.root_template / asset
-        if not source.is_file():
-            raise FileNotFoundError(source)
-        shutil.copyfile(source, arguments.site_output / asset)
+    (arguments.site_output / "index.html").write_text(
+        root_index,
+        encoding="utf-8",
+        newline="",
+    )
+    shutil.copyfile(root_style, arguments.site_output / "style.css")
     for split_name, split_family in _SPLITS:
         split_tensor = arguments.data / "splits" / f"{split_name}.safetensors"
         split_metadata = arguments.data / "splits" / f"{split_name}.json"
@@ -1351,18 +1442,8 @@ def main() -> None:
         data = InterimSiteData(
             schema=INTERIM_SITE_SCHEMA,
             protocol_id=config.protocol_id,
-            status=(
-                "Interim report: primary-validated 1 kb and 4 kb selected-model results, "
-                "nested-validation hyperparameter sweeps, and separately labeled post-hoc "
-                "direct-age, distance-integration, metadata-colored scatter, cluster-audit, "
-                "and interactive two-sphere latent UMAP analyses."
-            ),
-            disclaimer=(
-                "The planned 16 kb and 64 kb windows and the preregistered 16 kb projection are "
-                "not complete. Distance integration was designed after viewing existing test "
-                "results; the corrected direct tanh baseline, k=2 scatter audit, and all new "
-                "visualizations are also post-hoc. They require a new holdout for confirmation."
-            ),
+            status=status,
+            disclaimer=disclaimer,
             split_name=split_name,
             split_family=split_family,
             data_sha256=data_sha256,

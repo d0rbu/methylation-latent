@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Never, cast
 
@@ -18,28 +19,61 @@ from methylation_latent.cohort import load_probe_table
 from methylation_latent.config import load_protocol_config
 from methylation_latent.data_bundle import verify_primary_data_bundle
 from methylation_latent.domain import NonEmptyProbeSet
-from methylation_latent.dual_probe_protocol import load_dual_probe_protocol
+from methylation_latent.dual_probe_protocol import (
+    DualParentCell,
+    DualProbeProtocolConfig,
+    load_dual_probe_protocol,
+)
 
-_MANIFEST_SCHEMA = "methylation-latent.dual-probe-manifest.v1"
 _RESULTS_SCHEMA = "methylation-latent.dual-probe-results.v1"
 _SELECTION_SCHEMA = "methylation-latent.dual-probe-selection.v1"
 _TUNING_SCHEMA = "methylation-latent.dual-probe-tuning.v1"
 _REFIT_SCHEMA = "methylation-latent.dual-probe-refit.v1"
-_SITE_SCHEMA = "methylation-latent.dual-probe-site-data.v1"
+_SITE_SCHEMA = "methylation-latent.dual-probe-site-data.v2"
 _SPLITS = ("diverse-blocks", "held-out-chromosome")
-_WINDOWS = (1_024, 4_096)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReportSource:
+    config: Path
+    results: Path
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--config", type=Path)
     parser.add_argument("--parent-config", type=Path, required=True)
     parser.add_argument("--data", type=Path, required=True)
-    parser.add_argument("--dual-results", type=Path, required=True)
+    parser.add_argument("--dual-results", type=Path)
+    parser.add_argument(
+        "--dual-source",
+        action="append",
+        nargs=2,
+        type=Path,
+        metavar=("CONFIG", "RESULTS_ROOT"),
+        help="repeatable explicitly paired dual-probe protocol and results root",
+    )
     parser.add_argument("--base-site", type=Path, required=True)
     parser.add_argument("--template", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     return parser
+
+
+def _report_sources(arguments: argparse.Namespace) -> tuple[_ReportSource, ...]:
+    if (arguments.config is None) != (arguments.dual_results is None):
+        raise ValueError("--config and --dual-results must be supplied together")
+    sources: list[_ReportSource] = []
+    if arguments.config is not None:
+        sources.append(_ReportSource(arguments.config, arguments.dual_results))
+    if arguments.dual_source is not None:
+        sources.extend(_ReportSource(config, results) for config, results in arguments.dual_source)
+    if not sources:
+        raise ValueError(
+            "at least one dual source is required via --config/--dual-results or --dual-source"
+        )
+    if len(set(sources)) != len(sources):
+        raise ValueError("dual report sources must not be duplicated")
+    return tuple(sources)
 
 
 def _reject_nonfinite_json(value: str) -> Never:
@@ -148,20 +182,27 @@ def _validate_display(results: dict[str, object]) -> None:
 def _validate_results(
     results: dict[str, object],
     *,
-    protocol_id: str,
+    protocol: DualProbeProtocolConfig,
     protocol_sha256: str,
-    split_name: str,
-    window: int,
+    parent: DualParentCell,
 ) -> None:
     identity = _object(results, "identity")
+    split_name, window = parent.key
     if (
         results.get("schema") != _RESULTS_SCHEMA
         or results.get("status") != "post_hoc_hypothesis_generating_selected_only_test_evaluation"
         or results.get("test_evaluated_strategy_count") != 1
-        or _string(identity, "protocol_id") != protocol_id
+        or _string(identity, "protocol_id") != protocol.protocol_id
         or _string(identity, "protocol_config_sha256") != protocol_sha256
+        or _string(identity, "parent_protocol_id") != protocol.parent_protocol_id
+        or _string(identity, "parent_protocol_sha256") != protocol.parent_protocol_sha256
+        or _string(identity, "data_bundle_sha256") != protocol.data_bundle_sha256
         or _string(identity, "split_name") != split_name
         or _integer(identity, "window_size") != window
+        or _string(identity, "embedding_manifest_sha256") != parent.embedding_manifest_sha256
+        or _string(identity, "pair_cache_metadata_sha256") != parent.pair_cache_metadata_sha256
+        or _string(identity, "parent_selection_sha256") != parent.selection_sha256
+        or _string(identity, "parent_evaluation_sha256") != parent.evaluation_sha256
         or len(_list(results, "seeds")) != 3
         or len(_list(results, "seed_results")) != 3
     ):
@@ -185,6 +226,8 @@ def _validate_selection_and_tuning(
     results: dict[str, object],
 ) -> tuple[dict[str, object], list[dict[str, JsonValue]]]:
     selection = _load_json(selection_path)
+    selection_identity = _object(selection, "identity")
+    results_identity = _object(results, "identity")
     if (
         selection.get("schema") != _SELECTION_SCHEMA
         or selection.get("test_metrics_read") is not False
@@ -193,6 +236,22 @@ def _validate_selection_and_tuning(
         or len(_list(selection, "candidates")) != 7
     ):
         raise ValueError("dual-probe validation-only selection differs")
+    for key in (
+        "protocol_id",
+        "protocol_config_sha256",
+        "parent_protocol_id",
+        "parent_protocol_sha256",
+        "data_bundle_sha256",
+        "target_sha256",
+        "split_name",
+        "split_sha256",
+        "window_size",
+        "embedding_manifest_sha256",
+        "parent_selection_sha256",
+        "parent_evaluation_sha256",
+    ):
+        if selection_identity.get(key) != results_identity.get(key):
+            raise ValueError("dual-probe selection and result scientific identities differ")
     if _string(_object(results, "identity"), "dual_selection_sha256") != sha256_file(
         selection_path
     ):
@@ -226,13 +285,30 @@ def _validate_selection_and_tuning(
             if sha256_file(tuning_path) != _string(seed, "tuning_record_sha256"):
                 raise ValueError("dual-probe tuning record hash differs")
             tuning = _load_json(tuning_path)
+            tuning_identity = _object(tuning, "identity")
             if (
                 tuning.get("schema") != _TUNING_SCHEMA
-                or _string(_object(tuning, "identity"), "alpha_strategy") != name
+                or _string(tuning_identity, "alpha_strategy") != name
                 or _integer(_object(tuning, "partition"), "test_target_access_count") != 0
                 or tuning.get("selected_step") != seed.get("selected_step")
             ):
                 raise ValueError("dual-probe tuning record identity differs")
+            for key in (
+                "protocol_id",
+                "protocol_config_sha256",
+                "parent_protocol_id",
+                "parent_protocol_sha256",
+                "data_bundle_sha256",
+                "target_sha256",
+                "split_name",
+                "split_sha256",
+                "window_size",
+                "embedding_manifest_sha256",
+                "parent_selection_sha256",
+                "parent_evaluation_sha256",
+            ):
+                if tuning_identity.get(key) != results_identity.get(key):
+                    raise ValueError("dual-probe tuning and result scientific identities differ")
             seed_histories.append(
                 {
                     "seed": _integer(seed, "seed"),
@@ -277,6 +353,7 @@ def _validate_refits(root: Path, results: dict[str, object]) -> None:
         directory = root / split_name / f"window-{window}" / "refit" / f"seed-{seed}"
         metadata_path = directory / "metadata.json"
         metadata = _load_json(metadata_path)
+        metadata_identity = _object(metadata, "identity")
         model_path = directory / "model.safetensors"
         if (
             not isinstance(expected_hash, str)
@@ -288,6 +365,24 @@ def _validate_refits(root: Path, results: dict[str, object]) -> None:
             or _integer(_object(metadata, "partition"), "held_out_ols_row_count") != 0
         ):
             raise ValueError("dual-probe refit artifact differs")
+        for key in (
+            "protocol_id",
+            "protocol_config_sha256",
+            "parent_protocol_id",
+            "parent_protocol_sha256",
+            "data_bundle_sha256",
+            "target_sha256",
+            "split_name",
+            "split_sha256",
+            "window_size",
+            "embedding_manifest_sha256",
+            "parent_selection_sha256",
+            "parent_evaluation_sha256",
+            "dual_selection_sha256",
+            "primary_train_indices_sha256",
+        ):
+            if metadata_identity.get(key) != identity.get(key):
+                raise ValueError("dual-probe refit and result scientific identities differ")
 
 
 def _annotation_rows(
@@ -320,36 +415,50 @@ def _annotation_rows(
     return annotations
 
 
-def main() -> None:
-    arguments = _parser().parse_args()
-    repository = Path(__file__).resolve().parents[1]
-    compiler_git_commit = require_clean_git_commit(repository)
-    protocol = load_dual_probe_protocol(arguments.config)
-    protocol_sha256 = sha256_file(arguments.config)
-    if sha256_file(arguments.parent_config) != protocol.parent_protocol_sha256:
+def _claim_cell(observed: set[tuple[str, int]], key: tuple[str, int]) -> None:
+    if key in observed:
+        raise ValueError(f"dual-probe report contains duplicate cell {key[0]} window {key[1]}")
+    observed.add(key)
+
+
+def _load_report_source(
+    source: _ReportSource,
+    *,
+    parent_config: Path,
+    data: Path,
+    claimed_cells: set[tuple[str, int]],
+) -> tuple[list[dict[str, JsonValue]], dict[str, JsonValue], DualProbeProtocolConfig]:
+    protocol = load_dual_probe_protocol(source.config)
+    protocol_sha256 = sha256_file(source.config)
+    if sha256_file(parent_config) != protocol.parent_protocol_sha256:
         raise ValueError("dual report parent protocol hash differs")
-    parent = load_protocol_config(arguments.parent_config)
-    if parent.protocol_id != protocol.parent_protocol_id:
+    parent_protocol = load_protocol_config(parent_config)
+    if parent_protocol.protocol_id != protocol.parent_protocol_id:
         raise ValueError("dual report parent protocol ID differs")
-    if sha256_file(arguments.data / "bundle.json") != protocol.data_bundle_sha256:
+    if sha256_file(data / "bundle.json") != protocol.data_bundle_sha256:
         raise ValueError("dual report data-bundle hash differs")
     verify_primary_data_bundle(
-        arguments.data,
+        data,
         protocol_id=protocol.parent_protocol_id,
         protocol_sha256=protocol.parent_protocol_sha256,
     )
-    probes = load_probe_table(arguments.data / "probes.tsv")
-    manifest_path = arguments.dual_results / "manifest.json"
+
+    manifest_path = source.results / "manifest.json"
     manifest = _load_json(manifest_path)
+    expected = {
+        (split_name, int(window)) for split_name in protocol.splits for window in protocol.windows
+    }
     if (
-        manifest.get("schema") != _MANIFEST_SCHEMA
+        manifest.get("schema") != protocol.manifest_schema
         or manifest.get("protocol_id") != protocol.protocol_id
         or manifest.get("protocol_config_sha256") != protocol_sha256
-        or len(_list(manifest, "cells")) != 4
+        or len(_list(manifest, "cells")) != len(expected)
     ):
         raise ValueError("dual-probe manifest identity or completeness differs")
+    manifest_git_commit = _string(manifest, "code_git_commit")
+    manifest_sha256 = sha256_file(manifest_path)
     cells: list[dict[str, JsonValue]] = []
-    observed: set[tuple[str, int]] = set()
+    source_cells: set[tuple[str, int]] = set()
     artifact_git_commits: set[str] = set()
     for raw_cell in _list(manifest, "cells"):
         if not isinstance(raw_cell, dict):
@@ -357,51 +466,104 @@ def main() -> None:
         cell = cast(dict[str, object], raw_cell)
         split_name = _string(cell, "split_name")
         window = _integer(cell, "window_size")
-        observed.add((split_name, window))
-        results_path = _safe_relative(
-            arguments.dual_results,
-            _string(cell, "results_file"),
-        )
+        key = (split_name, window)
+        _claim_cell(source_cells, key)
+        if key not in expected:
+            raise ValueError("dual-probe manifest contains a cell outside its protocol grid")
+        _claim_cell(claimed_cells, key)
+        parent = protocol.parent(split_name, window)
+        results_path = _safe_relative(source.results, _string(cell, "results_file"))
         if sha256_file(results_path) != _string(cell, "results_sha256"):
             raise ValueError("dual-probe result hash differs from manifest")
         results = _load_json(results_path)
         _validate_results(
             results,
-            protocol_id=protocol.protocol_id,
+            protocol=protocol,
             protocol_sha256=protocol_sha256,
-            split_name=split_name,
-            window=window,
+            parent=parent,
         )
         artifact_git_commits.add(_string(_object(results, "identity"), "code_git_commit"))
         selection_path = results_path.parent / "selection.json"
         selection, histories = _validate_selection_and_tuning(
-            root=arguments.dual_results,
+            root=source.results,
             selection_path=selection_path,
             results=results,
         )
-        _validate_refits(arguments.dual_results, results)
+        _validate_refits(source.results, results)
         cells.append(
             {
                 "split_name": split_name,
                 "window_size": window,
+                "latent_dimension": int(parent.latent_dimension),
+                "lambda_age": float(parent.lambda_age),
+                "source": {
+                    "protocol_id": protocol.protocol_id,
+                    "protocol_sha256": protocol_sha256,
+                    "manifest_schema": protocol.manifest_schema,
+                    "manifest_sha256": manifest_sha256,
+                    "artifact_git_commit": manifest_git_commit,
+                },
                 "selection": cast(dict[str, JsonValue], selection),
                 "validation_histories": histories,
                 "results": cast(dict[str, JsonValue], results),
                 "results_sha256": sha256_file(results_path),
             }
         )
-    expected = {(split, window) for split in _SPLITS for window in _WINDOWS}
-    if observed != expected or len(observed) != 4 or len(artifact_git_commits) != 1:
+    if source_cells != expected or artifact_git_commits != {manifest_git_commit}:
         raise ValueError("dual-probe report cells or producer Git identity differ")
+    provenance: dict[str, JsonValue] = {
+        "protocol_id": protocol.protocol_id,
+        "protocol_sha256": protocol_sha256,
+        "manifest_schema": protocol.manifest_schema,
+        "manifest_sha256": manifest_sha256,
+        "artifact_git_commit": manifest_git_commit,
+        "splits": list(protocol.splits),
+        "windows": [int(window) for window in protocol.windows],
+        "cell_count": len(expected),
+    }
+    return cells, provenance, protocol
+
+
+def main() -> None:
+    arguments = _parser().parse_args()
+    repository = Path(__file__).resolve().parents[1]
+    compiler_git_commit = require_clean_git_commit(repository)
+    sources = _report_sources(arguments)
+    cells: list[dict[str, JsonValue]] = []
+    source_provenance: list[dict[str, JsonValue]] = []
+    protocols: list[DualProbeProtocolConfig] = []
+    claimed_cells: set[tuple[str, int]] = set()
+    for source in sources:
+        source_cells, provenance, protocol = _load_report_source(
+            source,
+            parent_config=arguments.parent_config,
+            data=arguments.data,
+            claimed_cells=claimed_cells,
+        )
+        cells.extend(source_cells)
+        source_provenance.append(provenance)
+        protocols.append(protocol)
+    parent_identities = {
+        (
+            protocol.parent_protocol_id,
+            protocol.parent_protocol_sha256,
+            protocol.data_bundle_sha256,
+        )
+        for protocol in protocols
+    }
+    if len(parent_identities) != 1:
+        raise ValueError("dual report sources do not share one parent scientific identity")
+    parent_protocol_id, parent_protocol_sha256, data_bundle_sha256 = next(iter(parent_identities))
+    probes = load_probe_table(arguments.data / "probes.tsv")
     cells.sort(key=lambda cell: (_SPLITS.index(str(cell["split_name"])), int(cell["window_size"])))
     site_data: dict[str, JsonValue] = {
         "schema": _SITE_SCHEMA,
         "scientific_status": "post_hoc_hypothesis_generating",
-        "protocol_id": protocol.protocol_id,
-        "protocol_sha256": protocol_sha256,
-        "artifact_git_commit": next(iter(artifact_git_commits)),
+        "parent_protocol_id": parent_protocol_id,
+        "parent_protocol_sha256": parent_protocol_sha256,
+        "data_bundle_sha256": data_bundle_sha256,
         "compiler_git_commit": compiler_git_commit,
-        "manifest_sha256": sha256_file(manifest_path),
+        "sources": source_provenance,
         "cells": cells,
         "probe_annotations": _annotation_rows(cells, probes),
     }
@@ -444,7 +606,8 @@ def main() -> None:
         encoding="utf-8",
         newline="",
     )
-    print(f"compiled output={arguments.output} manifest_sha256={sha256_file(manifest_path)}")
+    manifests = ",".join(str(source["manifest_sha256"]) for source in source_provenance)
+    print(f"compiled output={arguments.output} manifest_sha256={manifests}")
 
 
 if __name__ == "__main__":

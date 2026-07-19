@@ -34,6 +34,7 @@ from methylation_latent.interim_site import (
     build_interim_static_site,
 )
 from methylation_latent.site import AgeMetricPoint, DistanceMetricPoint, WindowSweepPoint
+from scripts import compile_interim_results_site as interim_compiler
 
 _POPULATIONS = (
     PairPopulation.SEEN_BY_HELD_OUT,
@@ -296,6 +297,66 @@ def test_interim_site_serializes_and_builds_exclusive_static_output(tmp_path: Pa
             template_directory=template,
             output_directory=tmp_path / "missing-asset",
         )
+
+
+def test_interim_copy_marks_only_64kb_pending_after_16kb_completes() -> None:
+    status, disclaimer, root_status = interim_compiler._interim_copy(
+        (1024, 4096, 16384),
+        (1024, 4096, 16384, 65536),
+        16384,
+    )
+
+    assert "completed 1 kb, 4 kb, and 16 kb windows" in status
+    assert "planned 64 kb window is not complete" in disclaimer
+    assert "preregistered 16 kb held-out projection is not published" in disclaimer
+    assert root_status.startswith(
+        "Interim results: the 1 kb, 4 kb, and 16 kb windows are complete. "
+        "The 64 kb window remains pending."
+    )
+    assert "16 kb held-out projection remains reserved" in root_status
+    assert "16 kb and 64 kb" not in disclaimer
+
+
+def test_interim_copy_keeps_projection_pending_before_16kb_completes() -> None:
+    status, disclaimer, root_status = interim_compiler._interim_copy(
+        (1024,),
+        (1024, 4096, 16384, 65536),
+        16384,
+    )
+
+    assert "completed 1 kb window" in status
+    assert "planned 4 kb, 16 kb, and 64 kb windows are not complete" in disclaimer
+    assert "preregistered 16 kb held-out projection is not complete" in disclaimer
+    assert root_status.startswith(
+        "Interim results: the 1 kb window is complete. "
+        "The 4 kb, 16 kb, and 64 kb windows remain pending."
+    )
+
+
+def test_interim_root_template_requires_one_escaped_status_placeholder() -> None:
+    root_template = (
+        Path(__file__).resolve().parents[1] / "interim-site-root-template" / "index.html"
+    ).read_text(encoding="utf-8")
+    rendered = interim_compiler._render_root_index(root_template, "1 < 2 & reviewed")
+
+    assert interim_compiler._ROOT_STATUS_TOKEN not in rendered
+    assert "1 &lt; 2 &amp; reviewed" in rendered
+    with pytest.raises(ValueError, match="placeholder differs"):
+        interim_compiler._render_root_index("<p>missing</p>", "status")
+    with pytest.raises(ValueError, match="placeholder differs"):
+        interim_compiler._render_root_index(
+            interim_compiler._ROOT_STATUS_TOKEN * 2,
+            "status",
+        )
+
+
+def test_interim_split_template_does_not_claim_16kb_cache_is_incomplete() -> None:
+    template = (
+        Path(__file__).resolve().parents[1] / "interim-site-template" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert "embedding cache is incomplete" not in template
+    assert "reserved for the all-windows primary site" in template
 
 
 @pytest.mark.parametrize(

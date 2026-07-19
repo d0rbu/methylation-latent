@@ -28,22 +28,29 @@ const metricMean = metric => Number(metric.mean);
 const aggregateMetric = (cell, population, mode) => cell.results.aggregates.pair_metrics[population].uniform[mode];
 const parentPair = (cell, population) => cell.results.parent_comparison.pair_metrics[population].uniform_sequence_inductive;
 const distanceUniform = (cell, population) => cell.results.distance_reference.populations[population].uniform;
-const latentDimension = cell => cell.split_name === "held-out-chromosome" && cell.window_size === 4096 ? 256 : 128;
+const latentDimension = cell => Number(cell.latent_dimension);
 
 const assertData = data => {
-  if (data.schema !== "methylation-latent.dual-probe-site-data.v1") throw new Error("Dual site-data schema differs");
+  if (data.schema !== "methylation-latent.dual-probe-site-data.v2") throw new Error("Dual site-data schema differs");
   if (data.scientific_status !== "post_hoc_hypothesis_generating") throw new Error("Dual scientific-status warning differs");
-  if (!Array.isArray(data.cells) || data.cells.length !== 4) throw new Error("Expected exactly four dual experiment cells");
+  if (!Array.isArray(data.sources) || data.sources.length < 1) throw new Error("Dual source provenance is absent");
+  const expectedCells = data.sources.reduce((total, source) => total + Number(source.cell_count), 0);
+  if (!Array.isArray(data.cells) || data.cells.length !== expectedCells || expectedCells < 1) throw new Error("Dual experiment cell completeness differs");
+  const sourceIdentities = new Set(data.sources.map(source => `${source.protocol_id}|${source.protocol_sha256}|${source.manifest_sha256}|${source.artifact_git_commit}`));
+  if (sourceIdentities.size !== data.sources.length) throw new Error("Dual source provenance is duplicated");
   const identities = new Set();
   data.cells.forEach(cell => {
     identities.add(`${cell.split_name}|${cell.window_size}`);
+    const sourceIdentity = `${cell.source.protocol_id}|${cell.source.protocol_sha256}|${cell.source.manifest_sha256}|${cell.source.artifact_git_commit}`;
+    if (!sourceIdentities.has(sourceIdentity)) throw new Error("Dual cell source provenance is unregistered");
+    if (!Number.isInteger(cell.latent_dimension) || cell.latent_dimension < 1 || !Number.isFinite(Number(cell.lambda_age))) throw new Error("Dual parent hyperparameter provenance differs");
     if (cell.results.schema !== "methylation-latent.dual-probe-results.v1") throw new Error("Dual result schema differs");
     if (cell.results.test_evaluated_strategy_count !== 1) throw new Error("Unselected alpha reached test evaluation");
     if (cell.selection.test_metrics_read !== false || cell.selection.candidates.length !== 7) throw new Error("Validation-only alpha selection differs");
     if (cell.selection.selected_alpha_strategy !== cell.results.selected_alpha_strategy) throw new Error("Selected alpha differs between artifacts");
     if (cell.results.seed_results.length !== 3) throw new Error("Three-seed result axis differs");
   });
-  if (identities.size !== 4) throw new Error("Dual experiment cells are duplicated");
+  if (identities.size !== data.cells.length) throw new Error("Dual experiment cells are duplicated");
 };
 
 const element = (name, text = "") => {
@@ -118,22 +125,26 @@ const renderFindings = data => {
   const parentHeld = cells.map(cell => Number(parentPair(cell, "held_out_by_held_out").pearson));
   const hybrid = cells.map(cell => metricMean(aggregateMetric(cell, "seen_by_held_out", "hybrid_learned_seen").pearson));
   const align = cells.map(cell => metricMean(cell.results.aggregates.train_alignment.mean));
+  const selectedCounts = new Map();
+  cells.forEach(cell => selectedCounts.set(cell.results.selected_alpha_strategy, (selectedCounts.get(cell.results.selected_alpha_strategy) || 0) + 1));
+  const selections = [...selectedCounts.entries()].map(([strategy, count]) => `${strategy.replaceAll("_", " ")} in ${count}/${cells.length} cells`).join("; ");
   const node = document.querySelector("#findings");
   node.append(
-    finding("Validation rejected every strategy that moved the sequence map.", "For alpha 0–0.75 and both linear schedules, every seed selected step 0 in all four cells. Alpha 1 won all cells; it leaves W fixed and can improve only the shared age direction plus learned-table geometry."),
-    finding("The sequence map lost nearly all rank signal.", `Held-out × held-out Pearson was ${fmt(Math.min(...held))}–${fmt(Math.max(...held))}, versus ${fmt(Math.min(...parentHeld))}–${fmt(Math.max(...parentHeld))} for the parent metric.`),
-    finding("Age prediction also failed.", `Held-out probe–age Pearson was ${fmt(Math.min(...age))}–${fmt(Math.max(...age))}; the parent full model achieved ${fmt(Math.min(...parentAge))}–${fmt(Math.max(...parentAge))}.`),
-    finding("The learned table did not provide useful known-site anchors.", `Hybrid seen × held-out Pearson was only ${fmt(Math.min(...hybrid))}–${fmt(Math.max(...hybrid))}, while mean learned/sequence cosine after refit was ${fmt(Math.min(...align))}–${fmt(Math.max(...align))}.`),
-    finding("Lower MSE here is shrinkage, not better prediction.", "The least-squares map produces near-zero pair cosines, reducing squared error relative to the high-variance parent predictions while Pearson collapses. The training-only distance reference still has lower MSE."),
+    finding("Validation-selected catch strategies.", selections),
+    finding("Fully inductive pair prediction.", `Held-out × held-out Pearson spans ${fmt(Math.min(...held))}–${fmt(Math.max(...held))}, versus ${fmt(Math.min(...parentHeld))}–${fmt(Math.max(...parentHeld))} for the corresponding parent metrics.`),
+    finding("Held-out age prediction.", `Probe–age Pearson spans ${fmt(Math.min(...age))}–${fmt(Math.max(...age))}; the corresponding parent full-model range is ${fmt(Math.min(...parentAge))}–${fmt(Math.max(...parentAge))}.`),
+    finding("Known-site hybrid prediction and alignment.", `Hybrid seen × held-out Pearson spans ${fmt(Math.min(...hybrid))}–${fmt(Math.max(...hybrid))}; mean learned/sequence cosine after refit spans ${fmt(Math.min(...align))}–${fmt(Math.max(...align))}.`),
+    finding("Read MSE together with correlation.", "Prediction shrinkage can reduce squared error while weakening rank signal. The tables therefore retain Pearson, MSE, and the training-only distance reference separately."),
   );
 };
 
 const renderHeadline = data => {
   const bestHeld = [...data.cells].sort((a, b) => metricMean(aggregateMetric(b, "held_out_by_held_out", "sequence_inductive").pearson) - metricMean(aggregateMetric(a, "held_out_by_held_out", "sequence_inductive").pearson))[0];
   const bestAge = [...data.cells].sort((a, b) => metricMean(b.results.aggregates.age_metrics.pearson) - metricMean(a.results.aggregates.age_metrics.pearson))[0];
+  const strategies = [...new Set(data.cells.map(cell => cell.results.selected_alpha_strategy))];
   const node = document.querySelector("#headline");
   node.append(
-    summaryCard("Selected alpha", "1.0", "All four split/window cells"),
+    summaryCard("Selected strategy", strategies.length === 1 ? strategies[0].replaceAll("_", " ") : `${strategies.length} strategies`, `${data.cells.length} registered split/window cells`),
     summaryCard("Best held-out × held-out Pearson", fmt(metricMean(aggregateMetric(bestHeld, "held_out_by_held_out", "sequence_inductive").pearson)), cellLabel(bestHeld)),
     summaryCard("Best age Pearson", fmt(metricMean(bestAge.results.aggregates.age_metrics.pearson)), cellLabel(bestAge)),
     summaryCard("Test strategies per cell", "1", "Validation-selected only"),
@@ -256,10 +267,11 @@ const renderAudit = data => {
 fetch("dual-probe-data.json", {cache: "no-store"}).then(response => {
   if (!response.ok) throw new Error(`Dual result request failed: ${response.status}`); return response.json();
 }).then(data => {
-  assertData(data); document.querySelector("#status").textContent = "Complete: 4 split/window cells × 7 alpha strategies × 3 seeds; selected-only test evaluation.";
-  document.querySelector("#protocol").textContent = `${data.protocol_id} · artifacts ${data.artifact_git_commit.slice(0, 12)}`;
+  assertData(data); document.querySelector("#status").textContent = `Complete: ${data.cells.length} split/window cells × 7 alpha strategies × 3 seeds; selected-only test evaluation.`;
+  document.querySelector("#protocol").textContent = `${data.sources.length} registered dual protocol source${data.sources.length === 1 ? "" : "s"} · parent ${data.parent_protocol_id}`;
   const provenance = document.querySelector("#provenance");
-  [`Protocol SHA-256: ${data.protocol_sha256}`, `Dual manifest SHA-256: ${data.manifest_sha256}`, `Artifact Git commit: ${data.artifact_git_commit}`, `Site compiler Git commit: ${data.compiler_git_commit}`, "Runtime: CUDA with deterministic algorithms and TF32 disabled", "All validation/test learned-row counts: exactly zero"]
+  const runtimes = [...new Set(data.cells.map(cell => cell.results.identity.runtime_device))].join(", ");
+  [`Parent protocol: ${data.parent_protocol_id}`, `Parent protocol SHA-256: ${data.parent_protocol_sha256}`, `Data bundle SHA-256: ${data.data_bundle_sha256}`, ...data.sources.flatMap(source => [`Dual protocol: ${source.protocol_id}`, `Protocol SHA-256: ${source.protocol_sha256}`, `${source.manifest_schema} SHA-256: ${source.manifest_sha256}`, `Artifact Git commit: ${source.artifact_git_commit}`, `Registered windows: ${source.windows.join(", ")}`]), `Site compiler Git commit: ${data.compiler_git_commit}`, `Runtime device(s): ${runtimes}; deterministic algorithms enabled and CUDA TF32 disabled`, "All validation/test learned-row counts: exactly zero"]
     .forEach(value => provenance.append(element("li", value)));
   renderFindings(data); renderHeadline(data); renderAlpha(data); renderMetricsTable(data); renderPairScatter(data); renderAgeScatter(data); renderDistance(data); renderAudit(data);
 }).catch(error => {

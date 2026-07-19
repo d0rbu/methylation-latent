@@ -76,7 +76,6 @@ _TUNING_SCHEMA = "methylation-latent.dual-probe-tuning.v1"
 _SELECTION_SCHEMA = "methylation-latent.dual-probe-selection.v1"
 _REFIT_SCHEMA = "methylation-latent.dual-probe-refit.v1"
 _RESULTS_SCHEMA = "methylation-latent.dual-probe-results.v1"
-_MANIFEST_SCHEMA = "methylation-latent.dual-probe-manifest.v1"
 _PARENT_SELECTION_SCHEMA = "methylation-latent.hyperparameter-selection.v2"
 _PARENT_EVALUATION_SCHEMA = "methylation-latent.held-out-evaluation.v2"
 _MODEL_KEYS = {
@@ -86,7 +85,7 @@ _MODEL_KEYS = {
     "global_indices",
 }
 _SPLITS = ("diverse-blocks", "held-out-chromosome")
-_WINDOWS = (1_024, 4_096)
+_SUPPORTED_WINDOWS = (1_024, 4_096, 16_384)
 _PAIR_CHUNK_SIZE = 16_384
 _PROJECTION_ROW_CHUNK_SIZE = 8_192
 _DISPLAY_LIMIT = 5_000
@@ -106,9 +105,34 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
     )
     parser.add_argument("--device", choices=("cpu", "cuda"), required=True)
-    parser.add_argument("--splits", nargs="+", choices=_SPLITS, default=list(_SPLITS))
-    parser.add_argument("--windows", nargs="+", type=int, choices=_WINDOWS, default=list(_WINDOWS))
+    parser.add_argument("--splits", nargs="+", choices=_SPLITS)
+    parser.add_argument("--windows", nargs="+", type=int, choices=_SUPPORTED_WINDOWS)
     return parser
+
+
+def _requested_splits(
+    requested: list[str] | None,
+    protocol: DualProbeProtocolConfig,
+) -> tuple[str, ...]:
+    values = protocol.splits if requested is None else tuple(requested)
+    if len(set(values)) != len(values):
+        raise ValueError("dual requested splits must not contain duplicates")
+    if not set(values).issubset(protocol.splits):
+        raise ValueError("dual requested splits must be an exact subset of the loaded protocol")
+    return values
+
+
+def _requested_windows(
+    requested: list[int] | None,
+    protocol: DualProbeProtocolConfig,
+) -> tuple[int, ...]:
+    protocol_windows = tuple(map(int, protocol.windows))
+    values = protocol_windows if requested is None else tuple(requested)
+    if len(set(values)) != len(values):
+        raise ValueError("dual requested windows must not contain duplicates")
+    if not set(values).issubset(protocol_windows):
+        raise ValueError("dual requested windows must be an exact subset of the loaded protocol")
+    return values
 
 
 def _configure_runtime(device: str) -> None:
@@ -1851,13 +1875,13 @@ def _publish_manifest(
 ) -> None:
     cells = tuple(
         (split_name, window, _cell_directory(output, split_name, window) / "results.json")
-        for split_name in _SPLITS
-        for window in _WINDOWS
+        for split_name in protocol.splits
+        for window in map(int, protocol.windows)
     )
     if any(not path.is_file() for _, _, path in cells):
         return
     record: dict[str, JsonValue] = {
-        "schema": _MANIFEST_SCHEMA,
+        "schema": protocol.manifest_schema,
         "protocol_id": protocol.protocol_id,
         "protocol_config_sha256": dual_config_sha256,
         "code_git_commit": code_git_commit,
@@ -1902,10 +1926,8 @@ def main() -> None:
     ):
         raise ValueError("dual sealed data dimensions differ")
     target_sha256 = sha256_file(arguments.data / "targets.safetensors")
-    splits = tuple(dict.fromkeys(arguments.splits))
-    windows = tuple(dict.fromkeys(arguments.windows))
-    if len(splits) != len(arguments.splits) or len(windows) != len(arguments.windows):
-        raise ValueError("dual requested splits and windows must not contain duplicates")
+    splits = _requested_splits(arguments.splits, protocol)
+    windows = _requested_windows(arguments.windows, protocol)
     for split_name in splits:
         split = _load_split(arguments.data, probes, split_name)
         split_sha256 = _split_sha256(arguments.data, split_name)

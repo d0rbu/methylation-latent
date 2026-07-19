@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +12,8 @@ from jaxtyping import TypeCheckError
 
 import methylation_latent.dual_probe as dual_probe
 import methylation_latent.dual_probe_protocol as dual_protocol
+import scripts.compile_dual_probe_report as dual_report
+import scripts.run_dual_probe_latent as dual_runner
 from methylation_latent.domain import (
     NonEmptyProbeSet,
     ProbeLocus,
@@ -354,7 +358,150 @@ def test_frozen_dual_protocol_parses_complete_candidate_grid() -> None:
         "linear_0_to_1",
         "linear_1_to_0",
     )
+    assert tuple(map(int, config.windows)) == (1_024, 4_096)
+    assert config.splits == ("diverse-blocks", "held-out-chromosome")
+    assert config.manifest_schema == "methylation-latent.dual-probe-manifest.v1"
     assert config.parent("held-out-chromosome", 4096).latent_dimension == 256
+
+
+def _write_dual_v2_protocol(path: Path) -> None:
+    source = Path("configs/dual-probe-latent-v1.toml").read_text(encoding="utf-8")
+    header = source.split("[[parent]]", maxsplit=1)[0]
+    header = header.replace(
+        'id = "gse87571-posthoc-dual-probe-latent-v1"',
+        'id = "gse87571-posthoc-dual-probe-latent-v2"',
+    ).replace("windows = [1024, 4096]", "windows = [16384]")
+    sha256 = "a" * 64
+    parents = "".join(
+        (
+            "[[parent]]\n"
+            f'split = "{split_name}"\n'
+            "window = 16384\n"
+            f"latent_dimension = {latent_dimension}\n"
+            "lambda_age = 1.0\n"
+            f'selection_sha256 = "{sha256}"\n'
+            f'evaluation_sha256 = "{sha256}"\n'
+            f'embedding_manifest_sha256 = "{sha256}"\n'
+            f'pair_cache_metadata_sha256 = "{sha256}"\n\n'
+        )
+        for split_name, latent_dimension in (
+            ("diverse-blocks", 128),
+            ("held-out-chromosome", 256),
+        )
+    )
+    path.write_text(header + parents, encoding="utf-8")
+
+
+def test_dual_protocol_v2_accepts_registered_16kb_only_grid(tmp_path: Path) -> None:
+    path = tmp_path / "dual-v2.toml"
+    _write_dual_v2_protocol(path)
+    config = load_dual_probe_protocol(path)
+    assert config.protocol_id == "gse87571-posthoc-dual-probe-latent-v2"
+    assert tuple(map(int, config.windows)) == (16_384,)
+    assert config.manifest_schema == "methylation-latent.dual-probe-manifest.v2"
+    assert config.parent("diverse-blocks", 16_384).lambda_age == 1.0
+    assert {parent.key for parent in config.parents} == {
+        ("diverse-blocks", 16_384),
+        ("held-out-chromosome", 16_384),
+    }
+
+
+@pytest.mark.parametrize("windows", ("[1024]", "[16384, 16384]", "[16384, 1024]"))
+def test_dual_protocol_v2_rejects_noncanonical_window_scope(
+    tmp_path: Path,
+    windows: str,
+) -> None:
+    path = tmp_path / "dual-v2.toml"
+    _write_dual_v2_protocol(path)
+    source = path.read_text(encoding="utf-8")
+    path.write_text(source.replace("windows = [16384]", f"windows = {windows}"), encoding="utf-8")
+    with pytest.raises(ValueError, match="canonical supported subset containing 16384"):
+        load_dual_probe_protocol(path)
+
+
+def test_dual_v2_runner_defaults_to_protocol_windows_and_rejects_drift(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "dual-v2.toml"
+    _write_dual_v2_protocol(path)
+    config = load_dual_probe_protocol(path)
+    assert dual_runner._requested_windows(None, config) == (16_384,)
+    assert dual_runner._requested_windows([16_384], config) == (16_384,)
+    assert dual_runner._requested_splits(None, config) == config.splits
+    with pytest.raises(ValueError, match="exact subset"):
+        dual_runner._requested_windows([1_024], config)
+    with pytest.raises(ValueError, match="duplicates"):
+        dual_runner._requested_windows([16_384, 16_384], config)
+    arguments = dual_runner._parser().parse_args(
+        (
+            "--config",
+            str(path),
+            "--parent-config",
+            "parent.toml",
+            "--data",
+            "data",
+            "--embeddings",
+            "embeddings",
+            "--experiments",
+            "experiments",
+            "--output",
+            "output",
+            "--phase",
+            "audit",
+            "--device",
+            "cpu",
+            "--windows",
+            "16384",
+        )
+    )
+    assert arguments.windows == [16_384]
+
+
+def test_dual_v2_manifest_uses_protocol_grid_and_v2_schema(tmp_path: Path) -> None:
+    path = tmp_path / "dual-v2.toml"
+    _write_dual_v2_protocol(path)
+    config = load_dual_probe_protocol(path)
+    output = tmp_path / "results"
+    for split_name in config.splits:
+        results_path = output / split_name / "window-16384" / "results.json"
+        results_path.parent.mkdir(parents=True)
+        results_path.write_text("{}\n", encoding="utf-8")
+    dual_runner._publish_manifest(
+        output=output,
+        protocol=config,
+        dual_config_sha256="b" * 64,
+        code_git_commit="c" * 40,
+    )
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema"] == "methylation-latent.dual-probe-manifest.v2"
+    assert {(cell["split_name"], cell["window_size"]) for cell in manifest["cells"]} == {
+        ("diverse-blocks", 16_384),
+        ("held-out-chromosome", 16_384),
+    }
+
+
+def test_dual_report_sources_are_explicit_and_duplicate_cells_fail() -> None:
+    arguments = argparse.Namespace(
+        config=Path("v1.toml"),
+        dual_results=Path("v1-results"),
+        dual_source=[[Path("v2.toml"), Path("v2-results")]],
+    )
+    assert dual_report._report_sources(arguments) == (
+        dual_report._ReportSource(Path("v1.toml"), Path("v1-results")),
+        dual_report._ReportSource(Path("v2.toml"), Path("v2-results")),
+    )
+    observed: set[tuple[str, int]] = set()
+    dual_report._claim_cell(observed, ("diverse-blocks", 16_384))
+    with pytest.raises(ValueError, match="duplicate cell"):
+        dual_report._claim_cell(observed, ("diverse-blocks", 16_384))
+    with pytest.raises(ValueError, match="supplied together"):
+        dual_report._report_sources(
+            argparse.Namespace(
+                config=Path("v1.toml"),
+                dual_results=None,
+                dual_source=None,
+            )
+        )
 
 
 def _small_audit() -> LeastSquaresAudit:
@@ -882,7 +1029,7 @@ def test_dual_protocol_helpers_dataclasses_and_lookup_reject_drift() -> None:
         replace(config, fixed_alphas=(parse_fraction(0.0),))
     with pytest.raises(ValueError, match="alpha schedules"):
         replace(config, schedule_names=("bad",))
-    with pytest.raises(ValueError, match="frozen grid"):
+    with pytest.raises(ValueError, match="protocol grid"):
         replace(config, parents=config.parents[:-1])
     with pytest.raises(ValueError, match="absent"):
         config.parent("diverse-blocks", 16_384)
@@ -893,7 +1040,7 @@ def test_dual_protocol_helpers_dataclasses_and_lookup_reject_drift() -> None:
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     (
-        ('status = "frozen"', 'status = "wrong"', "status or experiment axes"),
+        ('status = "frozen"', 'status = "wrong"', "status differs"),
         (
             "sequence_direct_target_weight = 0.0",
             "sequence_direct_target_weight = 0.1",

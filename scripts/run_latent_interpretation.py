@@ -53,6 +53,7 @@ from methylation_latent.latent_interpretation import (
     PairDecomposition,
     age_stratified_half_indices,
     deterministic_indices,
+    deterministic_window_pairs,
     exact_pair_decomposition,
     fit_linear_surrogate,
     gather_pair_products,
@@ -79,8 +80,14 @@ from methylation_latent.storage import (
     load_target_geometry,
 )
 
-_RESULT_SCHEMA = "methylation-latent.latent-interpretation-results.v1"
-_MANIFEST_SCHEMA = "methylation-latent.latent-interpretation-manifest.v1"
+_RESULT_SCHEMAS = {
+    1: "methylation-latent.latent-interpretation-results.v1",
+    2: "methylation-latent.latent-interpretation-results.v2",
+}
+_MANIFEST_SCHEMAS = {
+    1: "methylation-latent.latent-interpretation-manifest.v1",
+    2: "methylation-latent.latent-interpretation-manifest.v2",
+}
 _FINAL_SCHEMA = "methylation-latent.final-refit.v2"
 _MODEL_KEYS = {"age_direction", "projection.weight"}
 _PAIR_CHUNK_SIZE = 1024
@@ -782,21 +789,26 @@ def _run_cell(
 
 
 def _rank_curve(
-    first: t.Tensor,
-    second: t.Tensor,
+    predictions: tuple[t.Tensor, ...],
     empirical: t.Tensor,
     *,
     positive: bool,
     ranks: tuple[int, ...],
 ) -> list[dict[str, JsonValue]]:
+    if len(predictions) < 2 or any(
+        prediction.shape != empirical.shape for prediction in predictions
+    ):
+        raise ValueError("rank-curve window predictions are not aligned")
     maximum = ranks[-1]
-    ordered = stable_extreme_indices(first, second, positive=positive, maximum=maximum)
+    ordered = stable_extreme_indices(*predictions, positive=positive, maximum=maximum)
     direction_mask = empirical > 0.0 if positive else empirical < 0.0
     output: list[dict[str, JsonValue]] = []
     for rank in ranks:
         selected = ordered[:rank]
         target = empirical.index_select(0, selected)
-        prediction = (first.index_select(0, selected) + second.index_select(0, selected)) / 2.0
+        prediction = t.stack(tuple(value.index_select(0, selected) for value in predictions)).mean(
+            dim=0
+        )
         output.append(
             {
                 "rank": rank,
@@ -814,8 +826,7 @@ def _rank_curve(
 
 
 def _age_candidate_table(
-    first: CellRuntime,
-    second: CellRuntime,
+    cells: tuple[CellRuntime, ...],
     target_rho: t.Tensor,
     probes: NonEmptyProbeSet,
     annotations: dict[str, ManifestInterpretationAnnotation],
@@ -823,25 +834,24 @@ def _age_candidate_table(
     positive: bool,
     count: int,
 ) -> list[dict[str, JsonValue]]:
+    predictions = tuple(cell.test_age_prediction for cell in cells)
     selected = stable_extreme_indices(
-        first.test_age_prediction,
-        second.test_age_prediction,
+        *predictions,
         positive=positive,
         maximum=count,
     )
     output: list[dict[str, JsonValue]] = []
     for local_index in selected.tolist():
-        global_index = int(first.test_indices[local_index].item())
+        global_index = int(cells[0].test_indices[local_index].item())
         record = _annotation_record(global_index, probes, annotations)
+        window_predictions = {
+            str(cell.window): float(cell.test_age_prediction[local_index].item()) for cell in cells
+        }
         record.update(
             {
                 "empirical_rho": float(target_rho[global_index].item()),
-                "prediction_1kb": float(first.test_age_prediction[local_index].item()),
-                "prediction_4kb": float(second.test_age_prediction[local_index].item()),
-                "stable_magnitude": min(
-                    abs(float(first.test_age_prediction[local_index].item())),
-                    abs(float(second.test_age_prediction[local_index].item())),
-                ),
+                "predictions": window_predictions,
+                "stable_magnitude": min(abs(value) for value in window_predictions.values()),
             }
         )
         output.append(record)
@@ -849,8 +859,7 @@ def _age_candidate_table(
 
 
 def _pair_candidate_table(
-    first: CellRuntime,
-    second: CellRuntime,
+    cells: tuple[CellRuntime, ...],
     probes: NonEmptyProbeSet,
     annotations: dict[str, ManifestInterpretationAnnotation],
     *,
@@ -859,13 +868,14 @@ def _pair_candidate_table(
     count: int,
 ) -> list[dict[str, JsonValue]]:
     pair_name = PairSetName.HELD_OUT_STRATIFIED
-    cached = first.pair_cache.pair_sets[pair_name]
-    first_decomposition = first.pair_decompositions[pair_name.value]
-    second_decomposition = second.pair_decompositions[pair_name.value]
+    cached = cells[0].pair_cache.pair_sets[pair_name]
+    decompositions = tuple(cell.pair_decompositions[pair_name.value] for cell in cells)
     class_indices = t.nonzero(cached.pairs.distance_class == int(distance_class)).flatten()
     selected_local = stable_extreme_indices(
-        first_decomposition.prediction_total.index_select(0, class_indices),
-        second_decomposition.prediction_total.index_select(0, class_indices),
+        *tuple(
+            decomposition.prediction_total.index_select(0, class_indices)
+            for decomposition in decompositions
+        ),
         positive=positive,
         maximum=count,
     )
@@ -879,42 +889,58 @@ def _pair_candidate_table(
                 "left": _annotation_record(left, probes, annotations),
                 "right": _annotation_record(right, probes, annotations),
                 "distance_class": DISTANCE_CLASS_LABELS[int(distance_class)],
-                "empirical_correlation": float(first_decomposition.target_total[pair_index].item()),
-                "empirical_age_component": float(first_decomposition.target_age[pair_index].item()),
+                "empirical_correlation": float(decompositions[0].target_total[pair_index].item()),
+                "empirical_age_component": float(decompositions[0].target_age[pair_index].item()),
                 "empirical_age_adjusted_residual": float(
-                    first_decomposition.target_residual[pair_index].item()
+                    decompositions[0].target_residual[pair_index].item()
                 ),
-                "prediction_1kb": float(first_decomposition.prediction_total[pair_index].item()),
-                "prediction_4kb": float(second_decomposition.prediction_total[pair_index].item()),
+                "predictions": {
+                    str(cell.window): float(decomposition.prediction_total[pair_index].item())
+                    for cell, decomposition in zip(cells, decompositions, strict=True)
+                },
             }
         )
     return output
 
 
-def _window_comparison(
+def _validate_window_cells(
+    cells: tuple[CellRuntime, ...], protocol: LatentInterpretationProtocol
+) -> CellRuntime:
+    if len(cells) != len(protocol.windows):
+        raise ValueError("window comparison cell count differs from the protocol")
+    first = cells[0]
+    if (
+        tuple(cell.window for cell in cells) != protocol.windows
+        or any(cell.split_name != first.split_name for cell in cells)
+        or any(not t.equal(cell.test_indices, first.test_indices) for cell in cells[1:])
+        or any(cell.pair_cache is not first.pair_cache for cell in cells[1:])
+    ):
+        raise ValueError("window comparison cells are not aligned by split and held-out probes")
+    for pair_name in (PairSetName.SEEN_STRATIFIED, PairSetName.HELD_OUT_STRATIFIED):
+        reference = first.pair_decompositions[pair_name.value]
+        for cell in cells[1:]:
+            observed = cell.pair_decompositions[pair_name.value]
+            if not all(
+                t.equal(reference_value, observed_value)
+                for reference_value, observed_value in (
+                    (reference.target_total, observed.target_total),
+                    (reference.target_age, observed.target_age),
+                    (reference.target_residual, observed.target_residual),
+                )
+            ):
+                raise ValueError("window comparison empirical pair targets differ")
+    return first
+
+
+def _pairwise_window_comparison(
     first: CellRuntime,
     second: CellRuntime,
-    target_rho: t.Tensor,
-    probes: NonEmptyProbeSet,
-    annotations: dict[str, ManifestInterpretationAnnotation],
-    protocol: LatentInterpretationProtocol,
+    sample_local: t.Tensor,
     *,
-    split_offset: int,
+    neighbour_count: int,
 ) -> dict[str, JsonValue]:
-    if first.window != 1024 or second.window != 4096 or first.split_name != second.split_name:
-        raise ValueError("window comparison requires aligned 1 kb and 4 kb cells")
-    sample_local = deterministic_indices(
-        first.test_indices.numel(),
-        protocol.geometry.neighbour_sample_size,
-        seed=protocol.geometry.neighbour_sampling_seed + split_offset,
-    )
-    first_sample = first.test_latent.index_select(0, sample_local)
-    second_sample = second.test_latent.index_select(0, sample_local)
-    empirical_age = target_rho.index_select(0, first.test_indices)
     pair_agreement: dict[str, JsonValue] = {}
-    pair_displays: dict[str, JsonValue] = {}
     for pair_name in (PairSetName.SEEN_STRATIFIED, PairSetName.HELD_OUT_STRATIFIED):
-        cached = first.pair_cache.pair_sets[pair_name]
         first_decomposition = first.pair_decompositions[pair_name.value]
         second_decomposition = second.pair_decompositions[pair_name.value]
         pair_agreement[pair_name.value] = {
@@ -931,75 +957,11 @@ def _window_comparison(
                 second_decomposition.prediction_residual,
             ),
         }
-        display_indices = stratified_sample_indices(
-            cached.pairs.distance_class,
-            maximum_per_class=protocol.display.pairs_per_distance_class,
-            seed=protocol.display.sampling_seed
-            + split_offset
-            + int(pair_name == PairSetName.HELD_OUT_STRATIFIED),
-        )
-        pair_displays[pair_name.value] = {
-            "source_count": cached.pairs.count,
-            "display_count": display_indices.numel(),
-            "distance_class": cached.pairs.distance_class.index_select(0, display_indices).tolist(),
-            "target_total": first_decomposition.target_total.index_select(
-                0, display_indices
-            ).tolist(),
-            "target_age": first_decomposition.target_age.index_select(0, display_indices).tolist(),
-            "target_residual": first_decomposition.target_residual.index_select(
-                0, display_indices
-            ).tolist(),
-            "prediction_1kb_total": first_decomposition.prediction_total.index_select(
-                0, display_indices
-            ).tolist(),
-            "prediction_1kb_age": first_decomposition.prediction_age.index_select(
-                0, display_indices
-            ).tolist(),
-            "prediction_1kb_residual": first_decomposition.prediction_residual.index_select(
-                0, display_indices
-            ).tolist(),
-            "prediction_4kb_total": second_decomposition.prediction_total.index_select(
-                0, display_indices
-            ).tolist(),
-            "prediction_4kb_age": second_decomposition.prediction_age.index_select(
-                0, display_indices
-            ).tolist(),
-            "prediction_4kb_residual": second_decomposition.prediction_residual.index_select(
-                0, display_indices
-            ).tolist(),
-        }
-    age_display_local = deterministic_indices(
-        first.test_indices.numel(),
-        protocol.display.age_probe_count,
-        seed=protocol.display.sampling_seed + 100 + split_offset,
-    )
-    age_display: list[dict[str, JsonValue]] = []
-    for local_index in age_display_local.tolist():
-        global_index = int(first.test_indices[local_index].item())
-        record = _annotation_record(global_index, probes, annotations)
-        record.update(
-            {
-                "empirical_rho": float(target_rho[global_index].item()),
-                "prediction_1kb": float(first.test_age_prediction[local_index].item()),
-                "prediction_4kb": float(second.test_age_prediction[local_index].item()),
-            }
-        )
-        age_display.append(record)
-    held_name = PairSetName.HELD_OUT_STRATIFIED
-    held_cached = first.pair_cache.pair_sets[held_name]
-    held_first = first.pair_decompositions[held_name.value]
-    held_second = second.pair_decompositions[held_name.value]
-    candidate_distance = (
-        DistanceClass.TRANS
-        if bool((held_cached.pairs.distance_class == int(DistanceClass.TRANS)).any().item())
-        else DistanceClass.CIS_1MB_PLUS
-    )
-    candidate_mask = held_cached.pairs.distance_class == int(candidate_distance)
-    candidate_first = held_first.prediction_total[candidate_mask]
-    candidate_second = held_second.prediction_total[candidate_mask]
-    candidate_target = held_first.target_total[candidate_mask]
+    first_sample = first.test_latent.index_select(0, sample_local)
+    second_sample = second.test_latent.index_select(0, sample_local)
     return {
-        "split_name": first.split_name,
+        "first_window_size": first.window,
+        "second_window_size": second.window,
         "metric_cosine": normalized_frobenius_cosine(first.metric, second.metric),
         "age_pullback_cosine": normalized_frobenius_cosine(first.age_pullback, second.age_pullback),
         "age_prediction_pearson": strict_pearson(
@@ -1018,22 +980,124 @@ def _window_comparison(
         "top_neighbour_overlap": mean_neighbour_overlap(
             first_sample,
             second_sample,
-            neighbours=protocol.geometry.neighbour_count,
+            neighbours=neighbour_count,
         ),
         "neighbour_sample_count": sample_local.numel(),
-        "neighbour_count": protocol.geometry.neighbour_count,
+        "neighbour_count": neighbour_count,
         "pair_prediction_agreement": pair_agreement,
+    }
+
+
+def _window_comparison(
+    cells: tuple[CellRuntime, ...],
+    target_rho: t.Tensor,
+    probes: NonEmptyProbeSet,
+    annotations: dict[str, ManifestInterpretationAnnotation],
+    protocol: LatentInterpretationProtocol,
+    *,
+    split_offset: int,
+) -> dict[str, JsonValue]:
+    first = _validate_window_cells(cells, protocol)
+    by_window = {cell.window: cell for cell in cells}
+    sample_local = deterministic_indices(
+        first.test_indices.numel(),
+        protocol.geometry.neighbour_sample_size,
+        seed=protocol.geometry.neighbour_sampling_seed + split_offset,
+    )
+    pairwise = [
+        _pairwise_window_comparison(
+            by_window[first_window],
+            by_window[second_window],
+            sample_local,
+            neighbour_count=protocol.geometry.neighbour_count,
+        )
+        for first_window, second_window in deterministic_window_pairs(protocol.windows)
+    ]
+    empirical_age = target_rho.index_select(0, first.test_indices)
+    pair_displays: dict[str, JsonValue] = {}
+    for pair_name in (PairSetName.SEEN_STRATIFIED, PairSetName.HELD_OUT_STRATIFIED):
+        cached = first.pair_cache.pair_sets[pair_name]
+        decompositions = tuple(cell.pair_decompositions[pair_name.value] for cell in cells)
+        display_indices = stratified_sample_indices(
+            cached.pairs.distance_class,
+            maximum_per_class=protocol.display.pairs_per_distance_class,
+            seed=protocol.display.sampling_seed
+            + split_offset
+            + int(pair_name == PairSetName.HELD_OUT_STRATIFIED),
+        )
+        pair_displays[pair_name.value] = {
+            "source_count": cached.pairs.count,
+            "display_count": display_indices.numel(),
+            "distance_class": cached.pairs.distance_class.index_select(0, display_indices).tolist(),
+            "targets": {
+                "total": decompositions[0].target_total.index_select(0, display_indices).tolist(),
+                "age_component": decompositions[0]
+                .target_age.index_select(0, display_indices)
+                .tolist(),
+                "age_adjusted_residual": decompositions[0]
+                .target_residual.index_select(0, display_indices)
+                .tolist(),
+            },
+            "predictions": {
+                str(cell.window): {
+                    "total": decomposition.prediction_total.index_select(
+                        0, display_indices
+                    ).tolist(),
+                    "age_component": decomposition.prediction_age.index_select(
+                        0, display_indices
+                    ).tolist(),
+                    "age_adjusted_residual": decomposition.prediction_residual.index_select(
+                        0, display_indices
+                    ).tolist(),
+                }
+                for cell, decomposition in zip(cells, decompositions, strict=True)
+            },
+        }
+    age_display_local = deterministic_indices(
+        first.test_indices.numel(),
+        protocol.display.age_probe_count,
+        seed=protocol.display.sampling_seed + 100 + split_offset,
+    )
+    age_display: list[dict[str, JsonValue]] = []
+    for local_index in age_display_local.tolist():
+        global_index = int(first.test_indices[local_index].item())
+        record = _annotation_record(global_index, probes, annotations)
+        record.update(
+            {
+                "empirical_rho": float(target_rho[global_index].item()),
+                "predictions": {
+                    str(cell.window): float(cell.test_age_prediction[local_index].item())
+                    for cell in cells
+                },
+            }
+        )
+        age_display.append(record)
+    held_name = PairSetName.HELD_OUT_STRATIFIED
+    held_cached = first.pair_cache.pair_sets[held_name]
+    held_decompositions = tuple(cell.pair_decompositions[held_name.value] for cell in cells)
+    candidate_distance = (
+        DistanceClass.TRANS
+        if bool((held_cached.pairs.distance_class == int(DistanceClass.TRANS)).any().item())
+        else DistanceClass.CIS_1MB_PLUS
+    )
+    candidate_mask = held_cached.pairs.distance_class == int(candidate_distance)
+    candidate_predictions = tuple(
+        decomposition.prediction_total[candidate_mask] for decomposition in held_decompositions
+    )
+    candidate_target = held_decompositions[0].target_total[candidate_mask]
+    return {
+        "split_name": first.split_name,
+        "window_sizes": list(protocol.windows),
+        "pairwise_window_comparisons": pairwise,
         "age_rank_curves": {
             "positive": _rank_curve(
-                first.test_age_prediction,
-                second.test_age_prediction,
+                tuple(cell.test_age_prediction for cell in cells),
                 empirical_age,
                 positive=True,
                 ranks=protocol.display.candidate_ranks,
             ),
             "negative": _rank_curve(
-                first.test_age_prediction,
-                second.test_age_prediction,
+                tuple(cell.test_age_prediction for cell in cells),
                 empirical_age,
                 positive=False,
                 ranks=protocol.display.candidate_ranks,
@@ -1042,15 +1106,13 @@ def _window_comparison(
         "pair_candidate_distance_class": DISTANCE_CLASS_LABELS[int(candidate_distance)],
         "pair_rank_curves": {
             "positive": _rank_curve(
-                candidate_first,
-                candidate_second,
+                candidate_predictions,
                 candidate_target,
                 positive=True,
                 ranks=protocol.display.candidate_ranks,
             ),
             "negative": _rank_curve(
-                candidate_first,
-                candidate_second,
+                candidate_predictions,
                 candidate_target,
                 positive=False,
                 ranks=protocol.display.candidate_ranks,
@@ -1058,8 +1120,7 @@ def _window_comparison(
         },
         "age_candidates": {
             "positive": _age_candidate_table(
-                first,
-                second,
+                cells,
                 target_rho,
                 probes,
                 annotations,
@@ -1067,8 +1128,7 @@ def _window_comparison(
                 count=protocol.display.candidate_table_size,
             ),
             "negative": _age_candidate_table(
-                first,
-                second,
+                cells,
                 target_rho,
                 probes,
                 annotations,
@@ -1078,8 +1138,7 @@ def _window_comparison(
         },
         "pair_candidates": {
             "positive": _pair_candidate_table(
-                first,
-                second,
+                cells,
                 probes,
                 annotations,
                 distance_class=candidate_distance,
@@ -1087,8 +1146,7 @@ def _window_comparison(
                 count=protocol.display.candidate_table_size,
             ),
             "negative": _pair_candidate_table(
-                first,
-                second,
+                cells,
                 probes,
                 annotations,
                 distance_class=candidate_distance,
@@ -1101,7 +1159,85 @@ def _window_comparison(
     }
 
 
-def _publish(output: Path, results: dict[str, JsonValue], *, code_git_commit: str) -> None:
+def _legacy_v1_window_comparison(
+    comparison: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
+    """Preserve the immutable v1 payload when rerunning the two-window protocol."""
+
+    if comparison.get("window_sizes") != [1024, 4096]:
+        raise ValueError("legacy interpretation payload requires the v1 window grid")
+    raw_pairwise = cast(list[JsonValue], comparison["pairwise_window_comparisons"])
+    if len(raw_pairwise) != 1 or not isinstance(raw_pairwise[0], dict):
+        raise ValueError("legacy interpretation payload requires one window pair")
+    output = cast(dict[str, JsonValue], dict(raw_pairwise[0]))
+    output.pop("first_window_size")
+    output.pop("second_window_size")
+    output["split_name"] = cast(JsonValue, comparison["split_name"])
+    for key in (
+        "age_rank_curves",
+        "pair_candidate_distance_class",
+        "pair_rank_curves",
+    ):
+        output[key] = comparison[key]
+
+    def legacy_rows(raw_rows: JsonValue) -> list[dict[str, JsonValue]]:
+        if not isinstance(raw_rows, list):
+            raise TypeError("legacy candidate/display rows must be an array")
+        converted: list[dict[str, JsonValue]] = []
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, dict):
+                raise TypeError("legacy candidate/display row must be an object")
+            row = cast(dict[str, JsonValue], dict(raw_row))
+            predictions = cast(dict[str, JsonValue], row.pop("predictions"))
+            if set(predictions) != {"1024", "4096"}:
+                raise ValueError("legacy candidate/display prediction windows differ")
+            row["prediction_1kb"] = predictions["1024"]
+            row["prediction_4kb"] = predictions["4096"]
+            converted.append(row)
+        return converted
+
+    for key in ("age_candidates", "pair_candidates"):
+        raw_directions = cast(dict[str, JsonValue], comparison[key])
+        output[key] = {
+            direction: legacy_rows(raw_directions[direction])
+            for direction in ("positive", "negative")
+        }
+    output["age_display"] = legacy_rows(comparison["age_display"])
+    raw_displays = cast(dict[str, JsonValue], comparison["pair_displays"])
+    legacy_displays: dict[str, JsonValue] = {}
+    for population, raw_display in raw_displays.items():
+        if not isinstance(raw_display, dict):
+            raise TypeError("legacy pair display must be an object")
+        display = cast(dict[str, JsonValue], raw_display)
+        targets = cast(dict[str, JsonValue], display["targets"])
+        predictions = cast(dict[str, JsonValue], display["predictions"])
+        first_predictions = cast(dict[str, JsonValue], predictions["1024"])
+        second_predictions = cast(dict[str, JsonValue], predictions["4096"])
+        legacy_displays[population] = {
+            "source_count": display["source_count"],
+            "display_count": display["display_count"],
+            "distance_class": display["distance_class"],
+            "target_total": targets["total"],
+            "target_age": targets["age_component"],
+            "target_residual": targets["age_adjusted_residual"],
+            "prediction_1kb_total": first_predictions["total"],
+            "prediction_1kb_age": first_predictions["age_component"],
+            "prediction_1kb_residual": first_predictions["age_adjusted_residual"],
+            "prediction_4kb_total": second_predictions["total"],
+            "prediction_4kb_age": second_predictions["age_component"],
+            "prediction_4kb_residual": second_predictions["age_adjusted_residual"],
+        }
+    output["pair_displays"] = legacy_displays
+    return output
+
+
+def _publish(
+    output: Path,
+    results: dict[str, JsonValue],
+    *,
+    code_git_commit: str,
+    manifest_schema: str,
+) -> None:
     if output.exists():
         raise FileExistsError(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1112,7 +1248,7 @@ def _publish(output: Path, results: dict[str, JsonValue], *, code_git_commit: st
     write_canonical_json_exclusive(
         temporary / "manifest.json",
         {
-            "schema": _MANIFEST_SCHEMA,
+            "schema": manifest_schema,
             "status": "post_hoc_hypothesis_generating",
             "code_git_commit": code_git_commit,
             "results_file": results_path.name,
@@ -1129,6 +1265,8 @@ def main() -> None:
     code_git_commit = require_clean_git_commit(repository_root)
     print("stage=verify_protocol_and_bundle", flush=True)
     analysis_protocol = load_latent_interpretation_protocol(arguments.analysis_config)
+    result_schema = _RESULT_SCHEMAS[analysis_protocol.artifact_version]
+    manifest_schema = _MANIFEST_SCHEMAS[analysis_protocol.artifact_version]
     primary_config = load_protocol_config(arguments.protocol_config)
     if (
         primary_config.status != "frozen"
@@ -1255,16 +1393,18 @@ def main() -> None:
             )
             print(f"stage=cell_complete split={split_name} window={window}", flush=True)
         print(f"stage=compare_windows split={split_name}", flush=True)
+        comparison = _window_comparison(
+            tuple(runtimes[(split_name, window)] for window in analysis_protocol.windows),
+            targets.rho.tensor,
+            probes,
+            annotations,
+            analysis_protocol,
+            split_offset=split_offset,
+        )
         window_comparisons.append(
-            _window_comparison(
-                runtimes[(split_name, 1024)],
-                runtimes[(split_name, 4096)],
-                targets.rho.tensor,
-                probes,
-                annotations,
-                analysis_protocol,
-                split_offset=split_offset,
-            )
+            _legacy_v1_window_comparison(comparison)
+            if analysis_protocol.artifact_version == 1
+            else comparison
         )
     cross_split: list[dict[str, JsonValue]] = []
     for window in analysis_protocol.windows:
@@ -1280,7 +1420,7 @@ def main() -> None:
             }
         )
     results: dict[str, JsonValue] = {
-        "schema": _RESULT_SCHEMA,
+        "schema": result_schema,
         "status": "post_hoc_hypothesis_generating",
         "identity": {
             "code_git_commit": code_git_commit,
@@ -1323,7 +1463,12 @@ def main() -> None:
         "cross_split_weight_agreement": cross_split,
     }
     print("stage=publish", flush=True)
-    _publish(arguments.output, results, code_git_commit=code_git_commit)
+    _publish(
+        arguments.output,
+        results,
+        code_git_commit=code_git_commit,
+        manifest_schema=manifest_schema,
+    )
     print(f"stage=complete output={arguments.output}", flush=True)
 
 

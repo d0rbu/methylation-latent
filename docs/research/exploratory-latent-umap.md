@@ -3,8 +3,8 @@
 ## Scope
 
 This visualization describes how the full model's normalized latent geometry changes over
-`d = 16, 32, 64, 128` at `lambda = 0.1` for the completed 1 kb and 4 kb windows. It uses nested
-validation loci only and is not a model-selection metric.
+`d = 16, 32, 64, 128` at `lambda = 0.1` for the completed 1 kb, 4 kb, and 16 kb windows. It uses
+nested validation loci only and is not a model-selection metric.
 
 Every panel within a split uses the same 300 target-blind validation probes, sampled without
 replacement and balanced to 75 island, shore, shelf, and open-sea loci. The normalized learned age
@@ -78,7 +78,7 @@ uv run python scripts/run_latent_umap.py \
   --embeddings "$RUN_ROOT/embeddings" \
   --experiments "$RUN_ROOT/experiments" \
   --output "$RUN_ROOT/exploratory/validation-latent-spherical-umap-v3" \
-  --windows 1024 4096 \
+  --windows 1024 4096 16384 \
   --dimensions 16 32 64 128
 ```
 

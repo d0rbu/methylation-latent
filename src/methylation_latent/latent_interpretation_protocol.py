@@ -10,11 +10,19 @@ from typing import cast
 
 from beartype import beartype
 
-_SCHEMA = "methylation-latent.latent-interpretation-config.v1"
+_SCHEMA_V1 = "methylation-latent.latent-interpretation-config.v1"
+_SCHEMA_V2 = "methylation-latent.latent-interpretation-config.v2"
 _STATUS = "post_hoc_hypothesis_generating"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", flags=re.ASCII)
 _SPLITS = ("diverse-blocks", "held-out-chromosome")
-_WINDOWS = (1024, 4096)
+_WINDOWS_BY_SCHEMA = {
+    _SCHEMA_V1: (1024, 4096),
+    _SCHEMA_V2: (1024, 4096, 16384),
+}
+_VERSION_BY_SCHEMA = {_SCHEMA_V1: 1, _SCHEMA_V2: 2}
+_SUPPORTED_WINDOWS = tuple(
+    dict.fromkeys(window for windows in _WINDOWS_BY_SCHEMA.values() for window in windows)
+)
 
 
 def _positive(value: object, name: str) -> int:
@@ -126,7 +134,7 @@ class InterpretationParent:
     embedding_manifest_sha256: str
 
     def __post_init__(self) -> None:
-        if self.split not in _SPLITS or self.window not in _WINDOWS:
+        if self.split not in _SPLITS or self.window not in _SUPPORTED_WINDOWS:
             raise ValueError("interpretation parent split or window differs")
         if any(
             _SHA256.fullmatch(value) is None
@@ -148,14 +156,17 @@ class LatentInterpretationProtocol:
     geometry: GeometryProtocol
     display: DisplayProtocol
     parents: tuple[InterpretationParent, ...]
+    schema: str = _SCHEMA_V1
 
     def __post_init__(self) -> None:
+        if self.schema not in _WINDOWS_BY_SCHEMA:
+            raise ValueError("latent interpretation config schema differs")
         if not self.protocol_id or _SHA256.fullmatch(self.protocol_sha256) is None:
             raise ValueError("primary protocol identity is incomplete")
         if _SHA256.fullmatch(self.gpl13534_sha256) is None:
             raise ValueError("GPL13534 source hash is invalid")
         keys = tuple((parent.split, parent.window) for parent in self.parents)
-        expected = tuple((split, window) for split in _SPLITS for window in _WINDOWS)
+        expected = tuple((split, window) for split in _SPLITS for window in self.windows)
         if keys != expected:
             raise ValueError("interpretation parents must cover the frozen split/window grid")
 
@@ -165,7 +176,11 @@ class LatentInterpretationProtocol:
 
     @property
     def windows(self) -> tuple[int, ...]:
-        return _WINDOWS
+        return _WINDOWS_BY_SCHEMA[self.schema]
+
+    @property
+    def artifact_version(self) -> int:
+        return _VERSION_BY_SCHEMA[self.schema]
 
     def parent(self, split: str, window: int) -> InterpretationParent:
         matches = tuple(
@@ -197,14 +212,16 @@ def load_latent_interpretation_protocol(path: Path) -> LatentInterpretationProto
     }
     if set(raw) != expected_top:
         raise ValueError("latent interpretation top-level config fields differ")
-    if raw["schema"] != _SCHEMA or raw["status"] != _STATUS:
+    schema = raw["schema"]
+    if not isinstance(schema, str) or schema not in _WINDOWS_BY_SCHEMA or raw["status"] != _STATUS:
         raise ValueError("latent interpretation schema or status differs")
+    expected_windows = _WINDOWS_BY_SCHEMA[schema]
     windows_raw = raw["windows"]
     splits_raw = raw["splits"]
     if (
         not isinstance(windows_raw, list)
         or any(isinstance(value, bool) or not isinstance(value, int) for value in windows_raw)
-        or tuple(windows_raw) != _WINDOWS
+        or tuple(windows_raw) != expected_windows
         or not isinstance(splits_raw, list)
         or any(not isinstance(value, str) for value in splits_raw)
         or tuple(splits_raw) != _SPLITS
@@ -320,4 +337,5 @@ def load_latent_interpretation_protocol(path: Path) -> LatentInterpretationProto
             ),
         ),
         parents=tuple(parents),
+        schema=schema,
     )

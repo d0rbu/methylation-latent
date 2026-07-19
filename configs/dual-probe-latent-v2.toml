@@ -1,0 +1,66 @@
+[protocol]
+id = "gse87571-posthoc-dual-probe-latent-v2"
+status = "frozen"
+scientific_status = "post_hoc_hypothesis_generating"
+parent_protocol_id = "gse87571-hg19-caduceus-ps-v2"
+parent_protocol_sha256 = "4f62fcc8254519f84cbc9bbb016d8da4ed8c14e7b03bca9b93b8f090ff1a08a7"
+data_bundle_sha256 = "0669b85ff68229877b5dba4377342ae35ecdfc2f08a7bdc9fde27bd8f6f2f283"
+windows = [16384]
+splits = ["diverse-blocks", "held-out-chromosome"]
+
+[objective]
+formula = "L_geometry(u,a) + catch_weight * (alpha * (1-cos(u,stopgrad(z))) + (1-alpha) * (1-cos(stopgrad(u),z)))"
+geometry_formula = "mean((u@u.T-Y)^2) + lambda_age * mean((u@a-rho)^2)"
+sequence_direct_target_weight = 0.0
+catch_weight = 0.1
+weight_decay = 0.0
+
+[initialization]
+learned_vectors = "iid_standard_normal_then_rowwise_unit_norm"
+projection = "bias_free_training_partition_condition_truncated_least_squares_to_random_unit_vectors"
+normal_equation_condition_ceiling = 100000000.0
+relative_normal_residual_ceiling = 0.00001
+maximum_discarded_cross_moment_fraction = 0.005
+validation_or_test_rows_allowed = false
+
+[training]
+dense_optimizer = "adam"
+learned_table_optimizer = "sparse_adam"
+batch_size = 512
+neighbourhood_width = 1048576
+steps = 2000
+validation_interval = 100
+validation_pair_chunk_size = 512
+learning_rate = 0.001
+seeds = [851733, 851734, 851735]
+
+[alpha]
+fixed = [0.0, 0.25, 0.5, 0.75, 1.0]
+schedules = ["linear_0_to_1", "linear_1_to_0"]
+
+[selection]
+candidate_score = "mean_over_seeds_of_each_seed_minimum_validation_sequence_pair_mse_plus_age_mse"
+checkpoint_score = "validation_sequence_pair_mse_plus_age_mse"
+tie_break = "config_order_then_smaller_selected_step"
+test_policy = "evaluate_only_the_validation_selected_alpha_strategy_for_each_split_and_window"
+refit_partition = "complete_primary_train"
+
+[[parent]]
+split = "diverse-blocks"
+window = 16384
+latent_dimension = 256
+lambda_age = 0.1
+selection_sha256 = "4482aa21a39340a4d810fb50eb7646309d5e511c62ff2234a1f7e69232b33589"
+evaluation_sha256 = "5e3fe6c8f8065ef8d30671eb2c9b615115b7bc7ee4719084ba7886f498ed0867"
+embedding_manifest_sha256 = "e022aecd33a36c70c970913f34edd01d514602ebff20698fd46c7deee33b82ce"
+pair_cache_metadata_sha256 = "5d2ca7b767fc33e9b72a384f17451f3a285ffb465ed982e845402282c65338d7"
+
+[[parent]]
+split = "held-out-chromosome"
+window = 16384
+latent_dimension = 256
+lambda_age = 0.1
+selection_sha256 = "9f943365b1f55f5169661e58fbadf4972d24db2618e4e6f33a9c603089977de7"
+evaluation_sha256 = "777319987ae022e64066edf799f6dfa46d0d6402028ffdef8ae7abdcca77deba"
+embedding_manifest_sha256 = "e022aecd33a36c70c970913f34edd01d514602ebff20698fd46c7deee33b82ce"
+pair_cache_metadata_sha256 = "ee093d864c1e089ecc7baad71c0685da4811fe0422b7650c117c36893410eec6"

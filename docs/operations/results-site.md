@@ -35,7 +35,8 @@ an increasing strict subset of the four planned windows and writes
   same context-balanced nested-validation loci plus the learned age direction at
   `d = 16, 32, 64, 128` and `lambda = 0.1`, with the same six color modes and explicit distortion
   diagnostics;
-- an explicit pending state, rather than a substitute, for the 16-kb latent projection.
+- an explicit omission state, rather than a substitute, for the preregistered 16-kb latent
+  projection reserved for the all-windows primary site.
 
 ```bash
 export DATA_ROOT=/absolute/path/to/methylation-latent-data
@@ -52,11 +53,11 @@ uv run python scripts/compile_interim_results_site.py \
   --prediction-scatter "$RUN_ROOT/exploratory/prediction-scatter-v1" \
   --age-cluster-audit "$RUN_ROOT/exploratory/age-scatter-cluster-audit-v1" \
   --latent-umap "$RUN_ROOT/exploratory/validation-latent-spherical-umap-v3" \
-  --results-output "$RUN_ROOT/interim-site-data-v5" \
+  --results-output "$RUN_ROOT/interim-site-data-v10" \
   --site-template interim-site-template \
   --root-template interim-site-root-template \
-  --site-output "$RUN_ROOT/interim-site-v5" \
-  --windows 1024 4096
+  --site-output "$RUN_ROOT/interim-site-v10" \
+  --windows 1024 4096 16384
 ```
 
 Both output directories must be absent. The compiler verifies the sealed data and split identity,
@@ -66,7 +67,9 @@ validation-only target-free sampling contract, unit-sphere input and output metr
 every three-coordinate output and the age-vector point, distortion diagnostics, exact
 manifest/sequence-feature joins for every displayed probe, and the deterministic exploratory
 runtime contract before writing any split page. The ULP allowance covers independently ordered
-float64 reductions; counts remain exact.
+float64 reductions; counts remain exact. Landing-page and split-page copy derives completed and
+pending window labels from `--windows` and the frozen sweep rather than assuming a particular
+partial-run stage.
 
 ### Add the post-hoc protein report
 
@@ -75,9 +78,9 @@ schema. Start from an already validated, immutable interim site and write a new 
 
 ```bash
 uv run python scripts/compile_protein_extension_report.py \
-  --base-site "$RUN_ROOT/interim-site-v5" \
+  --base-site "$RUN_ROOT/interim-site-v10" \
   --results "$RUN_ROOT/exploratory/protein-extension-v1/results/results.json" \
-  --output "$RUN_ROOT/interim-site-v6"
+  --output "$RUN_ROOT/interim-site-v11"
 ```
 
 The compiler requires all 20 records (two split families, two windows, five representations),
@@ -114,6 +117,20 @@ uv run python scripts/run_dual_probe_latent.py \
   --windows 1024 4096
 ```
 
+The separately frozen v2 source extends the same reviewed objective to the 16-kb parents without
+mutating the v1 artifact root:
+
+```bash
+uv run python scripts/run_dual_probe_latent.py \
+  --config configs/dual-probe-latent-v2.toml \
+  --parent-config configs/protocol-v2.toml \
+  --data "$RUN_ROOT/data" \
+  --embeddings "$RUN_ROOT/embeddings" \
+  --experiments "$RUN_ROOT/experiments" \
+  --output "$RUN_ROOT/exploratory/dual-probe-latent-v2" \
+  --phase all --device cpu
+```
+
 Compile a new exclusive site directory from the currently validated site. This copies rather than
 mutates the base site and adds the alpha sweep, selected-only pair and age results, target-blind
 scatterplots, distance-reference curves, and initialization/alignment audits:
@@ -124,38 +141,54 @@ uv run python scripts/compile_dual_probe_report.py \
   --parent-config configs/protocol-v2.toml \
   --data "$RUN_ROOT/data" \
   --dual-results "$RUN_ROOT/exploratory/dual-probe-latent-v1" \
-  --base-site "$RUN_ROOT/interim-site-v7" \
+  --dual-source configs/dual-probe-latent-v2.toml \
+    "$RUN_ROOT/exploratory/dual-probe-latent-v2" \
+  --base-site "$RUN_ROOT/interim-site-v11" \
   --template dual-probe-site-template \
-  --output "$RUN_ROOT/interim-site-v8"
+  --output "$RUN_ROOT/interim-site-v12"
 ```
 
-The compiler hashes all four result records, all 84 tuning records, all 12 selected refit metadata
-and model payloads, the frozen data bundle, and the dual protocol. It rejects any unselected test
-record, learned validation/test row, incomplete seed/candidate axis, or display sample not marked
-as target-blind.
+The compiler hashes every result, tuning record, selected refit metadata/model payload, frozen data
+bundle, and versioned dual protocol across both explicitly paired sources. It rejects duplicate
+split/window claims, any unselected test record, learned validation/test row, incomplete
+seed/candidate axis, or display sample not marked as target-blind.
 
 ### Add the post-hoc latent-interpretation report
 
-The CPU-only analysis of the already fitted 1 kb and 4 kb models is compiled as another linked
-page. Start from the immutable site containing the dual-probe report and write a new exclusive
-directory:
+The CPU-only three-window analysis reconstructs the already fitted 1 kb, 4 kb, and 16 kb models
+without changing them:
+
+```bash
+uv run python scripts/run_latent_interpretation.py \
+  --analysis-config configs/latent-interpretation-v2.toml \
+  --protocol-config configs/protocol-v2.toml \
+  --data "$RUN_ROOT/data" \
+  --embeddings "$RUN_ROOT/embeddings" \
+  --experiments "$RUN_ROOT/experiments" \
+  --manifest "$DATA_ROOT/sources/GPL13534_HumanMethylation450_15017482_v.1.1.csv.gz" \
+  --output "$RUN_ROOT/exploratory/latent-interpretation-v2"
+```
+
+Compile it as another linked page. Start from the immutable site containing the combined
+dual-probe report and write a new exclusive directory:
 
 ```bash
 uv run python scripts/compile_latent_interpretation_report.py \
-  --config configs/latent-interpretation-v1.toml \
-  --results "$RUN_ROOT/exploratory/latent-interpretation-v1" \
-  --base-site "$RUN_ROOT/interim-site-v8" \
+  --config configs/latent-interpretation-v2.toml \
+  --results "$RUN_ROOT/exploratory/latent-interpretation-v2" \
+  --base-site "$RUN_ROOT/interim-site-v12" \
   --template latent-interpretation-site-template \
-  --output "$RUN_ROOT/interim-site-v9"
+  --output "$RUN_ROOT/interim-site-v13"
 ```
 
 The compiler verifies the analysis-manifest hash, frozen config and parent identities, complete
-four-cell grid, all 16 reliability replicates, both pair populations and their separate
-age/residual decompositions, display axes, prediction-only candidate tables, exact manifest join,
-CPU-only execution, and the no-parameter-change audit before copying any bytes. The report includes
-split-half target reliability, distance-stratified pair decomposition, scatterplots, model-output
-surrogates, rotation-invariant spectra and stability, rank precision, and candidate tables. It does
-not mutate the existing site or open another tunnel.
+six-cell grid, all three registered pairwise window comparisons, all 16 reliability replicates,
+both pair populations and their separate age/residual decompositions, display axes,
+prediction-only three-window candidate tables, exact manifest join, CPU-only execution, and the
+no-parameter-change audit before copying any bytes. The report includes split-half target
+reliability, distance-stratified pair decomposition, scatterplots, model-output surrogates,
+rotation-invariant spectra and stability, rank precision, and candidate tables. It does not mutate
+the existing site or open another tunnel.
 
 ## Compile
 
